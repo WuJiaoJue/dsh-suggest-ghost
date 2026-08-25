@@ -1,0 +1,73 @@
+{
+  "name": "dsh-suggest-ghost",
+  "version": "0.1.0",
+  "description": "DSH Web 输入预测插件：回合结束后 LLM 生成下一条建议，输入框空草稿时渲染幽灵文本，Tab 采纳（Claude Code 风格）。host 端 + client 端，零核心改动。",
+  "author": "wujue",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:smoke": "node --experimental-strip-types scripts/history-smoke.mjs && node --experimental-strip-types scripts/sanitize-smoke.mjs",
+    "replay": "node --experimental-strip-types scripts/replay-history.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
