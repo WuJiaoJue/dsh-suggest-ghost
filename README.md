@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="docs/logo.png?v=3" width="104" alt="dsh-suggest-ghost"/>
+</div>
+
 # dsh-suggest-ghost
 
 > DeepSeek Harness Web 输入预测插件：回合结束后用一次辅助 LLM 调用预测你的下一条提示词，草稿为空时以幽灵文本显示在输入框里；输入过程中则从当前会话历史找前缀补全。Tab 整条采纳，→ 逐词采纳。
