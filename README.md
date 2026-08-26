@@ -2,10 +2,6 @@
   <img src="docs/banner.png?v=2" alt="dsh-suggest-ghost — ghost autocomplete for DeepSeek Harness Web"/>
 </div>
 
-<div align="center">
-  <img src="docs/logo-mark.png?v=1" width="84" alt=""/>
-</div>
-
 # dsh-suggest-ghost
 
 [![version](https://img.shields.io/badge/version-0.1.0-0EA5E9)](http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost)
@@ -120,3 +116,8 @@ pnpm run replay      # 用真实会话日志回放补全管线
 ## 许可
 
 MIT © wujue。安全管线设计参考 [dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt)（MIT）。
+
+
+<div align="center">
+  <img src="docs/logo-peek.png?v=1" width="150" alt=""/>
+</div>
