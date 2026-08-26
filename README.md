@@ -1,8 +1,12 @@
 <div align="center">
-  <img src="docs/logo.png?v=3" width="104" alt="dsh-suggest-ghost"/>
+  <img src="docs/banner.png?v=1" alt="dsh-suggest-ghost — ghost autocomplete for DeepSeek Harness Web"/>
 </div>
 
 # dsh-suggest-ghost
+
+[![version](https://img.shields.io/badge/version-0.1.0-0EA5E9)](http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
 > DeepSeek Harness Web 输入预测插件：回合结束后用一次辅助 LLM 调用预测你的下一条提示词，草稿为空时以幽灵文本显示在输入框里；输入过程中则从当前会话历史找前缀补全。Tab 整条采纳，→ 逐词采纳。
 
