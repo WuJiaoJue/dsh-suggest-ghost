@@ -54,8 +54,6 @@ dsh plugin --profile web add .
 ## 配置
 
 全部设置在 Settings → Plugins 面板的 Suggest ghost 卡片，保存后即时生效：
-
-![Suggest ghost 设置卡片（Settings → Plugins）](docs/settings-card.png)
 卡片文案（字段 label/hint、按钮、徽章）跟随宿主 DSH 界面语言（中文 / English），
 设置页切换语言后实时跟随，无需刷新；旧宿主无 locale 服务时回退中文。
 
@@ -78,6 +76,10 @@ dsh plugin --profile web add .
     acceptKey: Tab             # 采纳快捷键
     llmEnabled: true           # LLM 建议开关
 ```
+
+<div align="center">
+  <img src="docs/settings-card.png?v=2" width="400" alt="Suggest ghost 设置卡片"/>
+</div>
 
 ## 安全
 
