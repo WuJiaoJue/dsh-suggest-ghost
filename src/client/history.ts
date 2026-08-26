@@ -30,17 +30,26 @@ export function textOf(blocks: unknown): string {
 /** 单条候选文本最大长度：超过视为系统注入/超大粘贴，不进历史候选。 */
 export const HISTORY_TEXT_MAX_CHARS = 2000;
 
-/** 从会话快照 nodes 提取可补全的历史用户消息（去相邻重复、跳过空白与系统注入块）。 */
+/** 从会话快照 nodes 提取可补全的历史用户消息（去相邻重复、跳过空白与系统注入块）。
+ * 兼容两种节点形态：legacy 节点把 content/source 放在顶层；装配后的 chat 视图
+ * 节点把它们包在 `node.data` 里。 */
 export function extractHistory(nodes: readonly unknown[]): string[] {
   const out: string[] = [];
   for (const node of nodes) {
     if (typeof node !== 'object' || node === null) continue;
-    const record = node as { kind?: unknown; content?: unknown; source?: { kind?: unknown } };
-    if (record.kind !== 'user') continue;
-    // 节点若带 source（部分视图有），非真实用户输入的注入消息直接跳过。
-    const srcKind = record.source?.kind;
+    const record = node as {
+      kind?: unknown;
+      data?: { content?: unknown; source?: { kind?: unknown } };
+      content?: unknown;
+      source?: { kind?: unknown };
+    };
+    if (record.kind !== 'user' && record.kind !== 'user/message') continue;
+    // 载荷优先取 chat 视图包裹层 node.data，回退 legacy 顶层。
+    const payload = (record.data ?? record) as { content?: unknown; source?: { kind?: unknown } };
+    // 节点若带 source，非真实用户输入的注入消息直接跳过。
+    const srcKind = payload.source?.kind;
     if (typeof srcKind === 'string' && srcKind !== 'user') continue;
-    const text = textOf(record.content).trim();
+    const text = textOf(payload.content).trim();
     // 空白 / 系统提醒包装块 / 超长文本（无法成为有效补全，且污染频次统计）。
     if (text === '' || text.startsWith('<system-reminder>') || text.length > HISTORY_TEXT_MAX_CHARS) continue;
     const last = out[out.length - 1];

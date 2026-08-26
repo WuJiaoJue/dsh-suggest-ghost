@@ -88,6 +88,33 @@ const nodes = [
 ];
 assert.deepEqual(extractHistory(nodes), ['第一条', '其他消息', '第一条']);
 
+// —— chat 视图节点形态回归：载荷包在 node.data 里（rc.7 装配视图）——
+{
+  const chatNodes = [
+    { key: 'k1', kind: 'turn-tail' },
+    {
+      key: 'k2',
+      kind: 'user',
+      data: {
+        kind: 'user', seq: 7,
+        content: [{ type: 'text', text: '这个插件让输入框学会接话' }],
+        source: { kind: 'user' },
+      },
+    },
+    { key: 'k3', kind: 'context' },
+    {
+      key: 'k4',
+      kind: 'user',
+      data: {
+        kind: 'user', seq: 9,
+        content: [{ type: 'text', text: '<system-reminder>系统注入</system-reminder>' }],
+        source: { kind: 'plugin' },
+      },
+    },
+  ];
+  assert.deepEqual(extractHistory(chatNodes), ['这个插件让输入框学会接话']);
+}
+
 // —— 系统注入过滤（活实例测试发现的回归）——
 // extractHistory：跳过 <system-reminder> 包装块与超长文本；带 source 的注入节点跳过。
 {
