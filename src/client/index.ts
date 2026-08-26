@@ -27,6 +27,7 @@ import { commonPrefixLength, extractHistory, historySuggestion, normalizeForMatc
 import { nextAcceptChunk } from './chunk.ts';
 import { keyCodeOf } from './keyspec.ts';
 import { SuggestGhostCard } from './settings-card.tsx';
+import type { LocaleFaceLike } from './useGhostT.ts';
 
 /** 投影键（与 host 端 PROJECTION_KEY 一致）。 */
 const PROJECTION_KEY = 'suggestGhost';
@@ -40,8 +41,9 @@ const SETTINGS_NAMESPACE = 'suggest-ghost';
 /** 插件名（与 manifest id 一致）。 */
 const name = 'dsh-suggest-ghost';
 /** 所需服务：会话 face + 输入机 face（幽灵必需，rc.7 fiber 激活门控）。
- * settingsScope / slots 为可选服务，在 apply 内用 ctx.get 可选读取，不在此声明，
- * 以免其缺失时连带 park 幽灵逻辑。 */
+ * settingsScope / slots / locale 为可选服务，在 apply 内用 ctx.get 可选读取，
+ * 不在此声明——cordis 的 fiber 门控会在声明的服务缺失时把整个插件 park，
+ * 以免其缺失时连带 park 幽灵逻辑（locale 缺失只应让卡片回退中文）。 */
 const inject = ['conversation', 'sessions'];
 
 /** 事件目标是否为会话输入框 textarea（唯一位于 data-input-scroll 内的 textarea）。 */
@@ -440,15 +442,18 @@ function apply(ctx: Context): void {
   }, 'dsh-suggest-ghost: composer ghost render');
 
   // 设置卡片：独立读取 slots/settingsScope（可选服务，缺失时不阻塞幽灵逻辑）。
+  // locale 同为可选增强（卡片文案跟随宿主界面语言）：经 ctx.get 无门控可选
+  // 读取后随槽位 inject 下发；缺失/旧宿主组合由 useGhostT 回退中文。
   const slots = ctx.get('slots');
   const settingsScopeForCard = ctx.get('settingsScope');
   if (slots === undefined || settingsScopeForCard === undefined) return;
+  const locale = ctx.get('locale') as LocaleFaceLike | undefined;
   slots.inject('settings.plugin.item', () => slots.register({
     name: 'settings.plugin.item',
     // keyed slot：必须给 key（宿主按命名空间 dispatch，entryKey=namespace）。
     key: SETTINGS_NAMESPACE,
     order: 30,
-    inject: () => ({ scope: settingsScopeForCard.bind({ namespace: SETTINGS_NAMESPACE }) }),
+    inject: () => ({ scope: settingsScopeForCard.bind({ namespace: SETTINGS_NAMESPACE }), locale }),
   }, SuggestGhostCard));
 }
 

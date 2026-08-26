@@ -16,41 +16,227 @@
  *   （label-primary 底 + bg-layer-3 字，非蓝色）；数字字段带非法校验
  *   （label-error 提示，与官方 ValueField 行为一致）。
  * 样式经 <style> 注入（sgc- 前缀类名），与官方 CSS 注入方式相同。
+ *
+ * 文案双语：字段 label/hint 直接存 { zh, en } 双值，chrome 微文案由
+ * zh 源字典 + en 映射类型约束键集一致；语言经 useGhostT 跟随宿主 DSH
+ * 界面语言（locale 服务），切换无刷新重渲染，服务缺失回退中文。
  * @module dsh-suggest-ghost/client/settings-card
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime';
 import { keyEventToSpec } from './keyspec.ts';
+import { useGhostT, type GhostLang, type LocaleFaceLike } from './useGhostT.ts';
 
 /** 字段输入形态。 */
 export type FieldKind = 'number' | 'text' | 'boolean' | 'key';
 
-/** 配置字段定义（key / 显示名 / 提示 / 输入形态 / 所属分组）。 */
+/** 双语文案值（zh 为源语言）。 */
+export interface Bilingual {
+  readonly zh: string;
+  readonly en: string;
+}
+
+/** 配置字段定义（key / 显示名 / 提示 / 输入形态 / 所属分组）。
+ * label/hint 为 { zh, en } 双值，按 useGhostT 解析出的语言取用。 */
 export const GHOST_FIELDS: ReadonlyArray<{
   readonly key: string;
-  readonly label: string;
-  readonly hint: string;
+  readonly label: Bilingual;
+  readonly hint: Bilingual;
   readonly kind: FieldKind;
   readonly section: 'llm' | 'history';
 }> = [
   // —— LLM 下一条建议 ——
-  { key: 'maxOutputTokens', label: '输出令牌上限', hint: '建议生成的最大输出 token（推理模型留足预算，如 512）', kind: 'number', section: 'llm' },
-  { key: 'maxSuggestionChars', label: '建议字符上限', hint: '幽灵文本可见字符数上限', kind: 'number', section: 'llm' },
-  { key: 'maxRecentTurns', label: '参考回合数', hint: '转录尾部保留的最近完成回合数（1 = 只取最后一轮）', kind: 'number', section: 'llm' },
-  { key: 'maxTranscriptChars', label: '转录字符预算', hint: '发送给建议模型的转录字符上限', kind: 'number', section: 'llm' },
-  { key: 'timeoutMs', label: '超时（毫秒）', hint: '辅助 LLM 请求端到端截止时间', kind: 'number', section: 'llm' },
-  { key: 'acceptKey', label: '采纳快捷键', hint: '点击后按下组合键；支持 Tab、字母/数字、F1-F12、方向键等（两个功能共用）', kind: 'key', section: 'llm' },
-  { key: 'llmEnabled', label: '启用 LLM 建议', hint: '关闭后每回合不再调用建议模型（省 token）；历史前缀补全与热度不受影响', kind: 'boolean', section: 'llm' },
-  { key: 'provider', label: 'Provider', hint: '显式路由；留空继承主请求路由', kind: 'text', section: 'llm' },
-  { key: 'model', label: 'Model', hint: '显式路由；留空继承主请求路由', kind: 'text', section: 'llm' },
+  {
+    key: 'maxOutputTokens',
+    label: { zh: '输出令牌上限', en: 'Output token cap' },
+    hint: {
+      zh: '建议生成的最大输出 token（推理模型留足预算，如 512）',
+      en: 'Max output tokens per suggestion (leave headroom for reasoning models, e.g. 512)',
+    },
+    kind: 'number',
+    section: 'llm',
+  },
+  {
+    key: 'maxSuggestionChars',
+    label: { zh: '建议字符上限', en: 'Suggestion character cap' },
+    hint: { zh: '幽灵文本可见字符数上限', en: 'Max visible characters of the ghost text' },
+    kind: 'number',
+    section: 'llm',
+  },
+  {
+    key: 'maxRecentTurns',
+    label: { zh: '参考回合数', en: 'Recent turns referenced' },
+    hint: {
+      zh: '转录尾部保留的最近完成回合数（1 = 只取最后一轮）',
+      en: 'Completed turns kept from the transcript tail (1 = last turn only)',
+    },
+    kind: 'number',
+    section: 'llm',
+  },
+  {
+    key: 'maxTranscriptChars',
+    label: { zh: '转录字符预算', en: 'Transcript character budget' },
+    hint: {
+      zh: '发送给建议模型的转录字符上限',
+      en: 'Max transcript characters sent to the suggestion model',
+    },
+    kind: 'number',
+    section: 'llm',
+  },
+  {
+    key: 'timeoutMs',
+    label: { zh: '超时（毫秒）', en: 'Timeout (ms)' },
+    hint: {
+      zh: '辅助 LLM 请求端到端截止时间',
+      en: 'End-to-end deadline for the auxiliary LLM request',
+    },
+    kind: 'number',
+    section: 'llm',
+  },
+  {
+    key: 'acceptKey',
+    label: { zh: '采纳快捷键', en: 'Accept shortcut' },
+    hint: {
+      zh: '点击后按下组合键；支持 Tab、字母/数字、F1-F12、方向键等（两个功能共用）',
+      en: 'Click, then press a key combo; supports Tab, letters/digits, F1-F12, arrows, etc. (shared by both features)',
+    },
+    kind: 'key',
+    section: 'llm',
+  },
+  {
+    key: 'llmEnabled',
+    label: { zh: '启用 LLM 建议', en: 'Enable LLM suggestions' },
+    hint: {
+      zh: '关闭后每回合不再调用建议模型（省 token）；历史前缀补全与热度不受影响',
+      en: 'When off, no suggestion model call per turn (saves tokens); history completion and hotness are unaffected',
+    },
+    kind: 'boolean',
+    section: 'llm',
+  },
+  {
+    key: 'provider',
+    label: { zh: 'Provider', en: 'Provider' },
+    hint: {
+      zh: '显式路由；留空继承主请求路由',
+      en: 'Explicit routing; leave empty to inherit the main request route',
+    },
+    kind: 'text',
+    section: 'llm',
+  },
+  {
+    key: 'model',
+    label: { zh: 'Model', en: 'Model' },
+    hint: {
+      zh: '显式路由；留空继承主请求路由',
+      en: 'Explicit routing; leave empty to inherit the main request route',
+    },
+    kind: 'text',
+    section: 'llm',
+  },
   // —— 历史前缀补全 ——
-  { key: 'historyEnabled', label: '启用历史补全', hint: '草稿非空时按历史消息前缀补全（打分制：最近优先 + 频次/热度加权）', kind: 'boolean', section: 'history' },
-  { key: 'historyCrossSession', label: '跨会话搜索', hint: '关=候选仅当前会话；开=并入其他会话的高频历史。热度频次打分不受此开关影响', kind: 'boolean', section: 'history' },
-  { key: 'historyMaxEntries', label: '最大历史条目', hint: '最多参考的历史条目数（0 = 不限）', kind: 'number', section: 'history' },
-  { key: 'historyMinChars', label: '最少输入字符', hint: '草稿输入多少字符后才触发补全（避免过早弹框）', kind: 'number', section: 'history' },
-  { key: 'wordAccept', label: '逐词采纳', hint: '幽灵显示时按 → 每次采纳一个词（中文按词典分词）；Tab 始终整条采纳。对两种建议模式都生效', kind: 'boolean', section: 'history' },
+  {
+    key: 'historyEnabled',
+    label: { zh: '启用历史补全', en: 'Enable history completion' },
+    hint: {
+      zh: '草稿非空时按历史消息前缀补全（打分制：最近优先 + 频次/热度加权）',
+      en: 'Completes the draft from history-message prefixes while typing (scored: recency first, weighted by frequency/heat)',
+    },
+    kind: 'boolean',
+    section: 'history',
+  },
+  {
+    key: 'historyCrossSession',
+    label: { zh: '跨会话搜索', en: 'Cross-session search' },
+    hint: {
+      zh: '关=候选仅当前会话；开=并入其他会话的高频历史。热度频次打分不受此开关影响',
+      en: 'Off = candidates from this session only; on = merge frequent history from other sessions. Hotness frequency scoring is unaffected by this switch',
+    },
+    kind: 'boolean',
+    section: 'history',
+  },
+  {
+    key: 'historyMaxEntries',
+    label: { zh: '最大历史条目', en: 'Max history entries' },
+    hint: {
+      zh: '最多参考的历史条目数（0 = 不限）',
+      en: 'How many history entries to consider at most (0 = unlimited)',
+    },
+    kind: 'number',
+    section: 'history',
+  },
+  {
+    key: 'historyMinChars',
+    label: { zh: '最少输入字符', en: 'Minimum typed characters' },
+    hint: {
+      zh: '草稿输入多少字符后才触发补全（避免过早弹框）',
+      en: 'How many characters must be typed before completion kicks in (avoids popping up too early)',
+    },
+    kind: 'number',
+    section: 'history',
+  },
+  {
+    key: 'wordAccept',
+    label: { zh: '逐词采纳', en: 'Word-by-word accept' },
+    hint: {
+      zh: '幽灵显示时按 → 每次采纳一个词（中文按词典分词）；Tab 始终整条采纳。对两种建议模式都生效',
+      en: 'While the ghost shows, → accepts one word at a time (Chinese segments via dictionary); Tab always accepts the whole text. Applies to both suggestion modes',
+    },
+    kind: 'boolean',
+    section: 'history',
+  },
 ];
+
+/** 卡片 chrome 微文案源字典（zh）：键集为唯一事实来源。 */
+const zhStrings = {
+  /** header 描述 */
+  description: '输入预测：历史前缀补全 + LLM 下一条建议（草稿为空时）。改动保存后立即生效。',
+  /** 未保存徽章 */
+  unsaved: '未保存',
+  /** 只读提示 */
+  readOnly: '当前部署不可写（内存模式）',
+  /** 分组标题 */
+  sectionLlm: 'LLM 下一条建议',
+  sectionHistory: '历史前缀补全',
+  /** footer 状态与按钮 */
+  saved: '已保存',
+  discard: '放弃修改',
+  saving: '保存中…',
+  save: '保存',
+  /** 数字字段校验错误 */
+  invalidNumber: '请输入数字',
+  /** 布尔字段选项 */
+  optionOn: '开启',
+  optionOff: '关闭',
+  /** 快捷键控件 */
+  keyCapturing: '按下组合键…（Esc 取消）',
+  keyEmpty: '点击设置快捷键',
+} as const;
+
+/** en 字典：映射类型约束与 zh 键集完全一致（缺键/多键均为编译期错误）。 */
+const enStrings: { [K in keyof typeof zhStrings]: string } = {
+  description:
+    'Input prediction: history prefix completion + LLM next suggestion (while the draft is empty). Changes take effect right after saving.',
+  unsaved: 'Unsaved',
+  readOnly: 'Not writable in this deployment (in-memory mode)',
+  sectionLlm: 'LLM next suggestion',
+  sectionHistory: 'History prefix completion',
+  saved: 'Saved',
+  discard: 'Discard changes',
+  saving: 'Saving…',
+  save: 'Save',
+  invalidNumber: 'Enter a number',
+  optionOn: 'On',
+  optionOff: 'Off',
+  keyCapturing: 'Press a key combo… (Esc to cancel)',
+  keyEmpty: 'Click to set a shortcut',
+};
+
+/** 单语言 chrome 文案字典类型（zh/en 通用）。 */
+export type GhostStrings = { [K in keyof typeof zhStrings]: string };
+
+/** 全部语言字典（键集一致，由 enStrings 的映射类型保证）。 */
+const GHOST_STRINGS: Record<GhostLang, GhostStrings> = { zh: zhStrings, en: enStrings };
 
 /** 卡片样式（对齐官方 PluginCard 的 token 与规格；sgc- 前缀防冲突）。 */
 const CARD_CSS = [
@@ -106,6 +292,8 @@ if (typeof document !== 'undefined' && document.getElementById(STYLE_ID) === nul
 /** 卡片组件 props：由槽位注册的 inject 提供。 */
 export interface SuggestGhostCardProps {
   scope: SettingsScope<Record<string, unknown>>;
+  /** 宿主 locale 服务 face（可选增强；缺失或旧宿主回退中文）。 */
+  locale?: LocaleFaceLike;
 }
 
 /** 会话状态快照的值类型。 */
@@ -117,7 +305,7 @@ function displayValue(v: unknown): string {
 }
 
 /** 与官方 PluginCard 视觉一致的 chevron-down 图标（内联 SVG，零依赖）。 */
-function ChevronDown({ className }: { className?: string }): React.ReactElement {
+function ChevronDown({ className }: { className?: string }): ReactElement {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" className={className} aria-hidden="true">
       <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
@@ -127,12 +315,13 @@ function ChevronDown({ className }: { className?: string }): React.ReactElement 
 
 /** 快捷键捕获控件：点击进入录制态，按下组合键即写入规范 spec（Esc 取消）。
  * 录制经 keyspec.keyEventToSpec，产出与幽灵匹配端（parseAcceptKey）同一张表。 */
-function KeyField({ id, value, disabled, onChange }: {
+function KeyField({ id, value, disabled, t, onChange }: {
   id: string;
   value: string;
   disabled: boolean;
+  t: GhostStrings;
   onChange: (spec: string) => void;
-}): React.ReactElement {
+}): ReactElement {
   const [capturing, setCapturing] = useState(false);
   useEffect(() => {
     if (!capturing) return;
@@ -165,13 +354,16 @@ function KeyField({ id, value, disabled, onChange }: {
       disabled={disabled}
       onClick={() => setCapturing(c => !c)}
     >
-      {capturing ? '按下组合键…（Esc 取消）' : value === '' ? '点击设置快捷键' : value}
+      {capturing ? t.keyCapturing : value === '' ? t.keyEmpty : value}
     </button>
   );
 }
 
-/** 设置卡片：读取/编辑/保存 suggest-ghost 命名空间（默认收起，点击头部展开）。 */
-export function SuggestGhostCard({ scope }: SuggestGhostCardProps): React.ReactElement | null {
+/** 设置卡片：读取/编辑/保存 suggest-ghost 命名空间（默认收起，点击头部展开）。
+ * 文案跟随宿主界面语言（locale 缺失回退中文），语言切换实时重渲染。 */
+export function SuggestGhostCard({ scope, locale }: SuggestGhostCardProps): ReactElement | null {
+  const lang = useGhostT(locale);
+  const t = GHOST_STRINGS[lang];
   const [snap, setSnap] = useState(scope.getSnapshot());
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope]);
   const [edits, setEdits] = useState<Record<string, string | boolean | number>>({});
@@ -224,7 +416,7 @@ export function SuggestGhostCard({ scope }: SuggestGhostCardProps): React.ReactE
   };
   const discard = (): void => setEdits({});
 
-  const renderField = (f: (typeof GHOST_FIELDS)[number]): React.ReactElement => {
+  const renderField = (f: (typeof GHOST_FIELDS)[number]): ReactElement => {
     const invalid = fieldInvalid(f);
     const inputClass = invalid ? 'sgc-input sgc-inputInvalid' : 'sgc-input';
     const control = f.kind === 'boolean' ? (
@@ -235,14 +427,15 @@ export function SuggestGhostCard({ scope }: SuggestGhostCardProps): React.ReactE
         disabled={!writable || busy}
         onChange={e => setField(f.key, e.target.value === 'true')}
       >
-        <option value="true">开启</option>
-        <option value="false">关闭</option>
+        <option value="true">{t.optionOn}</option>
+        <option value="false">{t.optionOff}</option>
       </select>
     ) : f.kind === 'key' ? (
       <KeyField
         id={`sgc-field-${f.key}`}
         value={fieldValue(f.key)}
         disabled={!writable || busy}
+        t={t}
         onChange={spec => setField(f.key, spec)}
       />
     ) : (
@@ -260,10 +453,10 @@ export function SuggestGhostCard({ scope }: SuggestGhostCardProps): React.ReactE
     return (
       <div key={f.key} className="sgc-field">
         <div className="sgc-fieldHead">
-          <label className="sgc-label" htmlFor={`sgc-field-${f.key}`}>{f.label}</label>
+          <label className="sgc-label" htmlFor={`sgc-field-${f.key}`}>{f.label[lang]}</label>
         </div>
         {control}
-        <p className={invalid ? 'sgc-invalid' : 'sgc-hint'}>{invalid ? '请输入数字' : f.hint}</p>
+        <p className={invalid ? 'sgc-invalid' : 'sgc-hint'}>{invalid ? t.invalidNumber : f.hint[lang]}</p>
       </div>
     );
   };
@@ -281,25 +474,23 @@ export function SuggestGhostCard({ scope }: SuggestGhostCardProps): React.ReactE
       >
         <span className="sgc-headText">
           <span className="sgc-name">Suggest ghost</span>
-          <span className="sgc-description">
-            输入预测：历史前缀补全 + LLM 下一条建议（草稿为空时）。改动保存后立即生效。
-          </span>
+          <span className="sgc-description">{t.description}</span>
         </span>
-        {isDirty && <span className="sgc-pending">未保存</span>}
+        {isDirty && <span className="sgc-pending">{t.unsaved}</span>}
         <ChevronDown className={open ? 'sgc-chevron sgc-chevronOpen' : 'sgc-chevron'} />
       </button>
       {open && (
         <div className="sgc-body">
-          {!writable && <p className="sgc-readOnly">当前部署不可写（内存模式）</p>}
-          <div className="sgc-section">LLM 下一条建议</div>
+          {!writable && <p className="sgc-readOnly">{t.readOnly}</p>}
+          <div className="sgc-section">{t.sectionLlm}</div>
           {llmFields.map(renderField)}
-          <div className="sgc-section">历史前缀补全</div>
+          <div className="sgc-section">{t.sectionHistory}</div>
           {historyFields.map(renderField)}
           <div className="sgc-footer">
-            {saved && <span className="sgc-status" role="status">已保存</span>}
-            <button className="sgc-discard" disabled={!isDirty || busy} onClick={discard}>放弃修改</button>
+            {saved && <span className="sgc-status" role="status">{t.saved}</span>}
+            <button className="sgc-discard" disabled={!isDirty || busy} onClick={discard}>{t.discard}</button>
             <button className="sgc-save" disabled={!writable || busy || !isDirty || anyInvalid} onClick={() => void save()}>
-              {busy ? '保存中…' : '保存'}
+              {busy ? t.saving : t.save}
             </button>
           </div>
         </div>
