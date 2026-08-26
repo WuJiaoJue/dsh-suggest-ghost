@@ -77,11 +77,7 @@ dsh plugin --profile web add .
     llmEnabled: true           # LLM 建议开关
 ```
 
-<div align="center">
-  <img src="docs/settings-card-1.png?v=1" width="330" alt="设置卡片：LLM 下一条建议"/>
-  <img src="docs/settings-card-2.png?v=1" width="330" alt="设置卡片：历史前缀补全"/>
-</div>
-<p align="center"><sub>Suggest ghost 设置卡片（Settings → Plugins）</sub></p>
+
 
 ## 安全
 
