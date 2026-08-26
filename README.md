@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/banner.png?v=1" alt="dsh-suggest-ghost — ghost autocomplete for DeepSeek Harness Web"/>
+  <img src="docs/banner.png?v=2" alt="dsh-suggest-ghost — ghost autocomplete for DeepSeek Harness Web"/>
 </div>
 
 # dsh-suggest-ghost
