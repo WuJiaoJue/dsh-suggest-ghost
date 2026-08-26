@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.png" width="128" alt="dsh-suggest-ghost logo"/>
+<img src="docs/logo.png?v=2" width="128" alt="dsh-suggest-ghost logo"/>
 
 # dsh-suggest-ghost
 
