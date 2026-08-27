@@ -79,6 +79,10 @@ dsh plugin --profile web add .
 
 
 
+<div align="center">
+  <img src="docs/settings-card.png?v=3" width="640" alt="Suggest ghost 设置卡片（Settings → Plugins）"/>
+</div>
+
 ## 安全
 
 - 只把最后一轮对话发给建议模型（工具调用与中间推理不出本地）
