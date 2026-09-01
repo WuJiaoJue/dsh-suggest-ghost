@@ -87,9 +87,7 @@ dsh plugin --profile web add .
 
 ## 安全
 
-- 只把最后一轮对话发给建议模型（工具调用与中间推理不出本地）
-- 发送前脱敏：AWS / OpenAI / GitHub / Slack / JWT / Stripe / 私钥 / Bearer 自动掩蔽
-- 输出净化：ANSI / 控制符 / 双向覆盖符剥离，去围栏引号，单行化；客套话、助手口吻、反问句丢弃为「无建议」（静默跳过，不报错）
+- 只把最后一轮对话发给建议模型，发送前自动脱敏常见凭据；输出经净化，不合格回复静默丢弃
 - 全程有界：输入字节 / 输出 token / 超时封顶；同回合防重入，新回合作废旧生成，卸载即中止在途请求
 
 ## 兼容性
@@ -123,7 +121,7 @@ pnpm run replay      # 用真实会话日志回放补全管线
 
 ## 许可
 
-MIT © wujue。安全管线设计参考 [dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt)（MIT）。
+MIT © wujue。安全与生成管线参考 [dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt)（MIT）实现。
 
 
 <div align="center">

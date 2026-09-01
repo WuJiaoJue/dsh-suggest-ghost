@@ -86,9 +86,7 @@ You can also override by id in cordis.patch.yml (as initial values for the above
 
 ## Security
 
-- Only the last round of conversation is sent to the suggestion model (tool calls and intermediate reasoning never leave the local machine)
-- Sanitized before sending: AWS / OpenAI / GitHub / Slack / JWT / Stripe / private keys / Bearer tokens are auto-masked
-- Output purification: ANSI / control chars / bidirectional override chars stripped, fence quotes removed, single-lined; pleasantries, assistant-voice phrasing, and rhetorical questions are discarded as "no suggestion" (silently skipped, no error)
+- Only the last round of conversation is sent to the suggestion model, with common credentials auto-masked before sending; output is purified and unqualified replies are silently discarded
 - Fully bounded end to end: input bytes / output tokens / timeout capped; re-entry guarded within the same turn, new turns invalidate stale generations, unloading aborts in-flight requests
 
 ## Compatibility
@@ -122,7 +120,7 @@ pnpm run replay      # replay the completion pipeline with real session logs
 
 ## License
 
-MIT © wujue. The security pipeline design references [dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt) (MIT).
+MIT © wujue. The security and generation pipelines are implemented with reference to [dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt) (MIT).
 
 
 <div align="center">
