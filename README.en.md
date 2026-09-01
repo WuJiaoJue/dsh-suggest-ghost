@@ -6,7 +6,7 @@
 
 **English** | [简体中文](README.md)
 
-[![version](https://img.shields.io/badge/version-0.2.0-0EA5E9)](http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost)
+[![version](https://img.shields.io/badge/version-0.2.0-0EA5E9)](https://github.com/WuJiaoJue/dsh-suggest-ghost)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -37,16 +37,16 @@ Dark text = what you typed; gray = ghost suggestion. **Tab** accepts the whole s
 
 ## Installation
 
-One-line install from Gitea (build artifacts are committed to the repo, no local build needed):
+One-line install from GitHub (build artifacts are committed to the repo, no local build needed):
 
 ```bash
-dsh plugin --profile web add "git+http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost.git"
+dsh plugin --profile web add "github:WuJiaoJue/dsh-suggest-ghost"
 ```
 
 Or from source:
 
 ```bash
-git clone http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost.git
+git clone https://github.com/WuJiaoJue/dsh-suggest-ghost.git
 cd dsh-suggest-ghost && pnpm install && pnpm run build
 dsh plugin --profile web add .
 ```

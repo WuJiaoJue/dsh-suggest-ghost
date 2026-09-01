@@ -6,7 +6,7 @@
 
 [English](README.en.md) | **简体中文**
 
-[![version](https://img.shields.io/badge/version-0.2.0-0EA5E9)](http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost)
+[![version](https://img.shields.io/badge/version-0.2.0-0EA5E9)](https://github.com/WuJiaoJue/dsh-suggest-ghost)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -37,16 +37,16 @@
 
 ## 安装
 
-从 Gitea 一行安装（构建产物已随仓库提交，无需本地构建）：
+从 GitHub 一行安装（构建产物已随仓库提交，无需本地构建）：
 
 ```bash
-dsh plugin --profile web add "git+http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost.git"
+dsh plugin --profile web add "github:WuJiaoJue/dsh-suggest-ghost"
 ```
 
 或者源码方式：
 
 ```bash
-git clone http://192.168.4.77:3000/dsh-plugins/dsh-suggest-ghost.git
+git clone https://github.com/WuJiaoJue/dsh-suggest-ghost.git
 cd dsh-suggest-ghost && pnpm install && pnpm run build
 dsh plugin --profile web add .
 ```
