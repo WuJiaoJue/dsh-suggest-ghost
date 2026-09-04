@@ -37,6 +37,12 @@
 
 ## 安装
 
+**npm 安装（推荐，预构建产物，无需授权）：**
+
+```bash
+dsh plugin --profile web add dsh-suggest-ghost
+```
+
 从 GitHub 一行安装（构建产物已随仓库提交，无需本地构建）：
 
 ```bash

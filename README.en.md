@@ -37,6 +37,12 @@ Dark text = what you typed; gray = ghost suggestion. **Tab** accepts the whole s
 
 ## Installation
 
+**From npm (recommended — prebuilt, no approval needed):**
+
+```bash
+dsh plugin --profile web add dsh-suggest-ghost
+```
+
 One-line install from GitHub (build artifacts are committed to the repo, no local build needed):
 
 ```bash
