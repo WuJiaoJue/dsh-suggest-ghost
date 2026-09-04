@@ -80,6 +80,44 @@ export function commonPrefixLength(a: string, b: string): number {
   return i;
 }
 
+/**
+ * 草稿是斜杠命令整行（如 `/later +3m 我重新部署了…`）时，返回命令名之后的
+ * 「内容」部分；否则原样返回。用于在历史前缀补全时跳过 `/xxx` 与命令参数前缀。
+ *
+ * 背景：DSH 命令总线对 `recordInput: false` 的命令（如 `/later`、`/schedule`）
+ * 不把原始整行写入会话日志，历史里只有到点注入的「内容」部分（不带命令前缀
+ * 与时间参数）。如果用户键入 `/later +3m 我重新部署了…` 时直接拿整段去做
+ * 前缀匹配，必然无候选——内容部分的归一化文本不以 `/later` 开头，时间参数
+ * `+3m` 又是噪声。
+ *
+ * 语义：
+ *  1. 只对**首段** `/<name>` 做剥离（`<name>` 须以字母开头、后跟字母数字下划线
+ *     连字符；与命令名规范一致）。
+ *  2. 紧跟命令名的第一个 token 如果看起来是「时间参数」（不含中文、不含句读
+ *     标点、不含拉丁/汉字字面量；见 {@link TIME_TOKEN_RE}），再剥离一段。
+ *     这样 `/later +3m 我` → `我`、`/schedule 明天9点 检查构建` → `检查构建`。
+ *     只剥第一段是因为命令参数通常只有「时间」一项；后续 token 视为内容。
+ *  3. 命令名后无内容时（仍在「等待补全」态光标在 hint 后）返回空串，让调用方
+ *     决定是否显示幽灵。
+ *
+ * 注意：本函数**只**用于历史前缀补全的匹配与采纳判断；渲染幽灵时 prefix
+ * 仍用原始草稿，保证幽灵对齐到用户已输入字符处。
+ */
+const TIME_TOKEN_RE = /^[+\d].*|^[a-z]+\d+.*|^\d{1,2}:\d{2}.*|^\d+月.*|^\d{1,2}日.*|^[上下]周.*|^今天.*|^明天.*|^后天.*|^今.*|^明.*|^后.*/i;
+
+export function stripCommandPrefix(draft: string): string {
+  const head = /^\/([A-Za-z][\w-]*)((?:\s+[\s\S]*)?)$/.exec(draft);
+  if (head === null) return draft;
+  const rest = (head[2] ?? '').replace(/^\s+/, '');
+  if (rest === '') return '';
+  const firstToken = /^\S+/.exec(rest);
+  if (firstToken === null) return rest;
+  if (TIME_TOKEN_RE.test(firstToken[0])) {
+    return rest.slice(firstToken[0].length).replace(/^\s+/, '');
+  }
+  return rest;
+}
+
 /** 打分权重：新近度主导，频次次之，热度再次，长度仅做微调。 */
 export const HISTORY_WEIGHTS = {
   /** 新近度（0–1，最新≈1）；跨会话候选固定 0。 */

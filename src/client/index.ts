@@ -23,7 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-runtime';
 import type { SuggestGhostProjection, SuggestGhostSuggested } from '../domain.ts';
-import { commonPrefixLength, extractHistory, historySuggestion, normalizeForMatch } from './history.ts';
+import { commonPrefixLength, extractHistory, historySuggestion, normalizeForMatch, stripCommandPrefix } from './history.ts';
 import { nextAcceptChunk } from './chunk.ts';
 import { keyCodeOf } from './keyspec.ts';
 import { SuggestGhostCard } from './settings-card.tsx';
@@ -273,6 +273,12 @@ function apply(ctx: Context): void {
 
     // 模式 1：草稿非空 → 历史前缀补全（打分制：新近度为主、频次/热度为辅）。
     if (settings.historyEnabled && draft.trim() !== '') {
+      // 草稿是斜杠命令整行时（如 `/later +3m 我重新部署了…`），用命令名之后
+      // 的「内容」部分去匹配历史。`/later` `recordInput:false`，历史里只有
+      // 到点注入的内容部分；保留时间参数只会让所有候选 startsWith 失败。
+      // 非命令整行（普通用户消息）时 stripCommandPrefix 原样返回 draft。
+      const contentDraft = stripCommandPrefix(draft);
+      if (contentDraft.trim() === '') return null;
       // 数据源：当前会话优先 chat.nodes（新装配视图），回退 legacy nodes（兼容）。
       const chatValues = (snapshot as { chat?: { nodes?: { values?: () => readonly unknown[] } } }).chat?.nodes?.values?.() ?? [];
       const history = extractHistory(chatValues.length > 0 ? chatValues : snapshot.nodes);
@@ -282,15 +288,17 @@ function apply(ctx: Context): void {
       const hotCounts = hot !== null && hot.length > 0
         ? new Map(hot.map(h => [normalizeForMatch(h.text), h.count] as const))
         : undefined;
-      const full = historySuggestion(history, draft, {
+      const full = historySuggestion(history, contentDraft, {
         minChars: settings.historyMinChars,
         maxEntries: settings.historyMaxEntries,
         hotCounts,
         extraCandidates: settings.historyCrossSession ? hot ?? undefined : undefined,
       });
       if (full === undefined) return null;
-      // 匹配基于归一化文本，渲染按原文公共前缀对齐（宽度/空白差异时仍正确）。
-      const common = commonPrefixLength(draft, full);
+      // 渲染按「原始草稿 + 候选」公共前缀对齐（宽度/空白差异时仍正确）；
+      // 对斜杠命令场景，prefix=draft 让幽灵对齐到已输入字符（含命令前缀），
+      // suffix 从 contentDraft 与 full 的归一化匹配段截尾——见 historySuggestion。
+      const common = commonPrefixLength(contentDraft, full);
       return { kind: 'history', prefix: draft, suffix: full.slice(common), full };
     }
 
@@ -378,7 +386,27 @@ function apply(ctx: Context): void {
       event.preventDefault();
       event.stopPropagation();
       if (bound !== null) {
-        bound.input.setDraft(content.kind === 'llm' ? content.text : content.full);
+        // LLM 下一条建议：直接覆盖草稿（用户空草稿时按 Tab，本就无前缀）。
+        // 历史补全：若草稿是斜杠命令整行（如 `/later +3m 我`），`full` 是历史
+        // 里的「内容」部分（命令 `recordInput:false`，不含命令名+参数）。
+        // 此时采纳必须把命令前缀一并回填，否则用户命令意图被破坏——只剩
+        // 内容部分，需要重新键入 `/later +3m ` 才能执行。
+        let accepted: string;
+        if (content.kind === 'llm') {
+          accepted = content.text;
+        } else {
+          const draftNow = bound.input.state.getSnapshot().draft;
+          const contentDraft = stripCommandPrefix(draftNow);
+          // 命令整行：contentDraft 是「内容部分」，它不包含命令名+参数。
+          // 还原时把 draftNow 头部到 contentDraft 之前的那段（含命令名、
+          // 时间参数、以及它们之间的空白）一并保留，再接 content.full。
+          const head = contentDraft === ''
+            ? draftNow
+            : draftNow.slice(0, draftNow.length - contentDraft.length);
+          const tailJoiner = head.endsWith(' ') || head === '' ? '' : ' ';
+          accepted = `${head}${tailJoiner}${content.full}`;
+        }
+        bound.input.setDraft(accepted);
       }
       overlay.hide();
       shown = null;
@@ -387,6 +415,9 @@ function apply(ctx: Context): void {
     // 逐词采纳：裸右方向键、光标位于草稿末尾时每次前进一个分词片段。
     // 其余情况一律不拦截（保留浏览器光标移动/焦点行为）；草稿与建议原文
     // 字面分歧（归一化等价但字符不同）时也不劫持，避免拼接出重复片段。
+    // 历史补全下若草稿是斜杠命令整行（如 `/later +3m 我`），命令名+参数段
+    // 不在候选 `full` 里，要用剥前缀后的 contentDraft 做前缀匹配；采纳后
+    // 把命令前缀段（含时间参数）一并保留，避免命令意图被破坏。
     if (settings.wordAccept
       && event.code === 'ArrowRight'
       && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
@@ -394,14 +425,29 @@ function apply(ctx: Context): void {
       const draftNow = bound !== null ? bound.input.state.getSnapshot().draft : '';
       const full = content.kind === 'llm' ? content.text : content.full;
       if (ta.selectionStart !== draftNow.length || ta.selectionEnd !== draftNow.length) return;
-      if (!full.startsWith(draftNow) || draftNow.length >= full.length) return;
-      const chunk = nextAcceptChunk(full.slice(draftNow.length));
+      const matchBase = content.kind === 'history'
+        ? stripCommandPrefix(draftNow)
+        : draftNow;
+      if (!full.startsWith(matchBase) || matchBase.length >= full.length) return;
+      const chunk = nextAcceptChunk(full.slice(matchBase.length));
       if (chunk === '') return;
       event.preventDefault();
       event.stopPropagation();
-      const accepted = draftNow + chunk;
+      let accepted: string;
+      if (content.kind === 'history') {
+        // 命令整行：draftNow 头部到 matchBase 之前是命令前缀段（含时间参数），
+        // 需要随逐词采纳保留。
+        const head = matchBase === ''
+          ? draftNow
+          : draftNow.slice(0, draftNow.length - matchBase.length);
+        const tailJoiner = head.endsWith(' ') || head === '' ? '' : ' ';
+        accepted = `${head}${tailJoiner}${matchBase}${chunk}`;
+      } else {
+        accepted = draftNow + chunk;
+      }
       if (bound !== null) bound.input.setDraft(accepted);
-      if (accepted === full) {
+      if (accepted === full || (content.kind === 'history'
+        && accepted.endsWith(full))) {
         overlay.hide();
         shown = null;
       }

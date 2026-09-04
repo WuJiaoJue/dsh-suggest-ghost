@@ -5,6 +5,7 @@ import {
   historySuggestion,
   normalizeForMatch,
   commonPrefixLength,
+  stripCommandPrefix,
 } from '../src/client/history.ts';
 import { HotnessTable } from '../src/hotness.ts';
 import { nextAcceptChunk, nextAcceptChunkFallback } from '../src/client/chunk.ts';
@@ -166,5 +167,32 @@ assert.equal(nextAcceptChunk(''), '');
 assert.equal(nextAcceptChunkFallback('帮我看下日志'), '帮我');
 assert.equal(nextAcceptChunkFallback('run the'), 'run ');
 assert.equal(nextAcceptChunkFallback(' the'), ' the');
+
+// —— 斜杠命令前缀剥离 ——
+assert.equal(stripCommandPrefix('我重新部署了'), '我重新部署了', '普通消息原样返回');
+assert.equal(stripCommandPrefix('/later 我重新部署了'), '我重新部署了', '基础命令剥前缀');
+assert.equal(stripCommandPrefix('/later +3m 我重新部署了，你可以E2E测试了'), '我重新部署了，你可以E2E测试了', '带时间参数的 /later');
+assert.equal(stripCommandPrefix('/schedule 1532 检查构建结果'), '检查构建结果');
+assert.equal(stripCommandPrefix('/schedule +1h30m 检查构建结果'), '检查构建结果');
+assert.equal(stripCommandPrefix('/schedule 明天9点 检查构建结果'), '检查构建结果');
+assert.equal(stripCommandPrefix('/schedule 30分钟后 提醒构建结果'), '提醒构建结果');
+assert.equal(stripCommandPrefix('/schedule 9点半 开会'), '开会');
+assert.equal(stripCommandPrefix('/later '), '', '命令后无内容返回空串');
+assert.equal(stripCommandPrefix('/later'), '', '无内容参数返回空串');
+assert.equal(stripCommandPrefix('//not'), '//not', '双斜杠非命令，不剥');
+assert.equal(stripCommandPrefix('/'), '/', '单斜杠非命令，不剥');
+assert.equal(stripCommandPrefix('/123abc x'), '/123abc x', '数字开头非命令，不剥');
+// 中文命令名后无内容：内容是「开会」（中文首 token 不是时间）
+assert.equal(stripCommandPrefix('/later 开会'), '开会');
+// 与 historySuggestion 联动：剥离后能命中历史里到点代发的「内容」段
+assert.equal(
+  historySuggestion(
+    ['我重新部署了，你可以E2E测试了'],
+    stripCommandPrefix('/later +3m 我重新部署了'),
+    opts,
+  ),
+  '我重新部署了，你可以E2E测试了',
+  '命令整行的内容部分应能命中历史候选',
+);
 
 console.log('✅ 全部冒烟测试通过');
