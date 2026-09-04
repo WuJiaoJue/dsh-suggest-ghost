@@ -7,6 +7,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
 import { PROJECTION_KEY } from './domain.js';
 import type { SuggestGhostSuggested } from './domain.js';
+import type { Transcript } from './transcript.js';
 /** 本能力所属的辅助请求超时错误码。 */
 export declare const SUGGEST_TIMEOUT_CODE = "SUGGEST_GHOST_TIMEOUT";
 /** host 插件配置（未校验版本）。 */
@@ -27,24 +28,12 @@ export interface Config {
 export declare function resolveConfig(config: Config): Config;
 /** 建议生成指令：只预测用户下一条提示词，禁止生成内容或元文本。 */
 export declare function systemPrompt(maxSuggestionChars: number, language: string): string;
-/** 一条脱敏后的对话交换。 */
-export interface TranscriptPair {
-    readonly role: 'user' | 'assistant';
-    readonly text: string;
-}
-/** 有界转录及其日志归因。 */
-export interface Transcript {
-    readonly pairs: readonly TranscriptPair[];
-    readonly sourceMessageSeqs: readonly number[];
-    readonly baseSeq: number;
-}
-/** 建议回复语言跟随会话（最后一条用户消息含 CJK → 简体中文）。 */
-export declare function suggestionLanguage(pairs: readonly TranscriptPair[]): string;
 /**
  * 从会话日志构建模型可见转录：最近 `maxRecentTurns` 个已完成回合的
- * user/assistant 消息（默认 1 = 只取最后一轮），脱敏、按预算截尾。
+ * user/assistant 消息（默认 1 = 只取最后一轮），脱敏，依次按字符预算
+ * （`maxTranscriptChars`）与 UTF-8 字节预算（`maxInputBytes`）截尾。
  */
-export declare function buildTranscript(session: Session, maxRecentTurns: number, maxTranscriptChars: number): Transcript | undefined;
+export declare function buildTranscript(session: Session, maxRecentTurns: number, maxTranscriptChars: number, maxInputBytes: number): Transcript | undefined;
 /**
  * 为一个已完成回合生成建议。模型产出空或不合格回复 = 无建议（静默返回
  * undefined），真实失败抛错。

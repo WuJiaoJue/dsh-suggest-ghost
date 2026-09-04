@@ -18,11 +18,16 @@ import { PROJECTION_KEY } from './domain.js';
 import type { SuggestGhostSuggested } from './domain.js';
 import {
   cleanSuggestion,
-  hasCJK,
   redactSecrets,
   sanitizeSuggestion,
   shouldFilterSuggestion,
 } from './sanitize.js';
+import {
+  frameTranscript,
+  suggestionLanguage,
+  trimTranscript,
+} from './transcript.js';
+import type { Transcript, TranscriptPair } from './transcript.js';
 
 /** 本能力所属的辅助请求超时错误码。 */
 export const SUGGEST_TIMEOUT_CODE = 'SUGGEST_GHOST_TIMEOUT';
@@ -126,19 +131,6 @@ export function systemPrompt(maxSuggestionChars: number, language: string): stri
   ].join('\n');
 }
 
-/** 一条脱敏后的对话交换。 */
-export interface TranscriptPair {
-  readonly role: 'user' | 'assistant';
-  readonly text: string;
-}
-
-/** 有界转录及其日志归因。 */
-export interface Transcript {
-  readonly pairs: readonly TranscriptPair[];
-  readonly sourceMessageSeqs: readonly number[];
-  readonly baseSeq: number;
-}
-
 /** 提取消息文本块。 */
 function renderMessageText(message: Message): string {
   let out = '';
@@ -148,45 +140,16 @@ function renderMessageText(message: Message): string {
   return out;
 }
 
-/** 预算内保留最新若干对；至少保留最新一对。 */
-function keepTail(pairs: readonly TranscriptPair[], budget: number): number {
-  let remaining = budget;
-  let kept = 0;
-  for (const pair of [...pairs].reverse()) {
-    const cost = pair.role.length + pair.text.length + 2;
-    if (cost > remaining && kept > 0) break;
-    kept += 1;
-    remaining -= cost;
-  }
-  return Math.max(1, kept);
-}
-
-/** 建议回复语言跟随会话（最后一条用户消息含 CJK → 简体中文）。 */
-export function suggestionLanguage(pairs: readonly TranscriptPair[]): string {
-  for (const pair of [...pairs].reverse()) {
-    if (pair.role !== 'user') continue;
-    return hasCJK(pair.text) ? '简体中文' : 'English';
-  }
-  return 'English';
-}
-
-/** 组装带标签块供模型阅读。 */
-function frameTranscript(pairs: readonly TranscriptPair[]): string {
-  const blocks: string[] = [];
-  for (const pair of pairs) {
-    blocks.push(pair.role === 'user' ? `[User Message]\n${pair.text}` : `[Assistant Response]\n${pair.text}`);
-  }
-  return blocks.join('\n\n');
-}
-
 /**
  * 从会话日志构建模型可见转录：最近 `maxRecentTurns` 个已完成回合的
- * user/assistant 消息（默认 1 = 只取最后一轮），脱敏、按预算截尾。
+ * user/assistant 消息（默认 1 = 只取最后一轮），脱敏，依次按字符预算
+ * （`maxTranscriptChars`）与 UTF-8 字节预算（`maxInputBytes`）截尾。
  */
 export function buildTranscript(
   session: Session,
   maxRecentTurns: number,
   maxTranscriptChars: number,
+  maxInputBytes: number,
 ): Transcript | undefined {
   const events = session.events;
   let lastTurn = 0;
@@ -213,10 +176,12 @@ export function buildTranscript(
     baseSeq = event.seq;
   }
   if (pairs.length === 0) return undefined;
-  const keptCount = keepTail(pairs, Math.max(1, maxTranscriptChars));
+  // 双预算裁剪（字符 + UTF-8 字节）：中文长回复不再因突破 maxInputBytes
+  // 而整轮失败——裁剪逻辑见 trimTranscript（纯函数，可单测）。
+  const trimmed = trimTranscript(pairs, sourceMessageSeqs, maxTranscriptChars, maxInputBytes);
   return {
-    pairs: pairs.slice(pairs.length - keptCount),
-    sourceMessageSeqs: sourceMessageSeqs.slice(sourceMessageSeqs.length - keptCount),
+    pairs: trimmed.pairs,
+    sourceMessageSeqs: trimmed.sourceMessageSeqs,
     baseSeq,
   };
 }
@@ -286,7 +251,15 @@ export async function generateSuggestion(
   signal: AbortSignal,
 ): Promise<SuggestGhostSuggested | undefined> {
   signal.throwIfAborted();
-  const transcript = buildTranscript(session, config.maxRecentTurns ?? 1, config.maxTranscriptChars);
+  const startedAt = Date.now();
+  // buildTranscript 已按 maxInputBytes 做 UTF-8 字节兜底截断，这里不再需要
+  // 硬抛错：超预算的中文长回复会被优雅裁剪而非整轮静默失败。
+  const transcript = buildTranscript(
+    session,
+    config.maxRecentTurns ?? 1,
+    config.maxTranscriptChars,
+    config.maxInputBytes,
+  );
   if (transcript === undefined) {
     throw new Error('dsh-suggest-ghost: session has no model-visible transcript to suggest from');
   }
@@ -294,10 +267,6 @@ export async function generateSuggestion(
   const language = suggestionLanguage(transcript.pairs);
   const system = systemPrompt(config.maxSuggestionChars, language);
   const framed = frameTranscript(transcript.pairs);
-  const inputBytes = Buffer.byteLength(framed, 'utf8');
-  if (inputBytes > config.maxInputBytes) {
-    throw new Error(`dsh-suggest-ghost: input is ${inputBytes} bytes, exceeding maxInputBytes ${config.maxInputBytes}`);
-  }
   const messages: Message[] = [createUserMessage({
     content: [{ type: 'text', text: framed }],
     source: { kind: 'plugin', plugin: 'dsh-suggest-ghost' },
@@ -338,7 +307,8 @@ export async function generateSuggestion(
         .join(' ');
       const cleaned = cleanSuggestion(text);
       if (cleaned.length === 0 || shouldFilterSuggestion(cleaned)) {
-        // 空回复或不合格回复 = 正常「无建议」。
+        // 空回复或不合格回复 = 正常「无建议」。归因日志：帮助诊断「这轮怎么没建议」。
+        ctx.logger.debug?.(`dsh-suggest-ghost: no usable suggestion (empty/filtered) after ${Date.now() - startedAt}ms on attempt ${attempt}/${maxAttempts} (${route.provider}/${route.model})`);
         return undefined;
       }
       const { text: suggestion, truncated } = sanitizeSuggestion(cleaned, config.maxSuggestionChars);
@@ -350,6 +320,7 @@ export async function generateSuggestion(
         truncated,
         acceptKey: config.acceptKey ?? 'Tab',
       };
+      ctx.logger.debug?.(`dsh-suggest-ghost: suggestion ready in ${Date.now() - startedAt}ms on attempt ${attempt}/${maxAttempts} (${route.provider}/${route.model})`);
       return suggested;
     } catch (error) {
       // 外部中止（新回合取代 / 卸载）不重试；最后一次尝试失败则原样抛出。

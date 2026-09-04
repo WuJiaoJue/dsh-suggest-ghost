@@ -116,6 +116,11 @@ class GhostOverlay {
     if (typeof document !== 'undefined') document.head.appendChild(this.styleTag);
   }
 
+  /** 当前绑定的 textarea（未绑定时为 null）。 */
+  get currentTextarea(): HTMLTextAreaElement | null {
+    return this.textarea;
+  }
+
   /** 绑定到当前 textarea（若变化则重建对齐）。 */
   private attach(textarea: HTMLTextAreaElement): void {
     if (this.textarea === textarea) return;
@@ -313,6 +318,9 @@ function apply(ctx: Context): void {
     return { kind: 'llm', text: suggestion.text, acceptKey: suggestion.acceptKey };
   };
 
+  /** 缓存的上一次 textarea 查询结果（React 可能重建节点；isConnected 校验兜底）。 */
+  let cachedTextarea: HTMLTextAreaElement | null = null;
+
   /** 渲染幽灵 overlay。 */
   const render = (): void => {
     resolve();
@@ -329,8 +337,15 @@ function apply(ctx: Context): void {
       ? `llm:${content.text}`
       : `hist:${content.prefix}|${content.suffix}`;
     if (shown !== null && shown.key === key) return; // 无变化
-    const textarea = document.querySelector<HTMLTextAreaElement>('[data-input-scroll] textarea');
+    // 复用已绑定的 textarea；仅当缓存失效（React 重建/首次）时才查询 DOM。
+    const attached = overlay.currentTextarea;
+    let textarea = attached !== null && attached.isConnected
+      ? attached
+      : cachedTextarea !== null && cachedTextarea.isConnected
+        ? cachedTextarea
+        : document.querySelector<HTMLTextAreaElement>('[data-input-scroll] textarea');
     if (textarea === null) return; // 输入框尚未挂载，等待下次通知
+    cachedTextarea = textarea;
     overlay.attach(textarea);
     overlay.show(content);
     shown = { key, content };

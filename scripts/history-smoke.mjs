@@ -9,6 +9,7 @@ import {
 } from '../src/client/history.ts';
 import { HotnessTable } from '../src/hotness.ts';
 import { nextAcceptChunk, nextAcceptChunkFallback } from '../src/client/chunk.ts';
+import { trimTranscript } from '../src/transcript.ts';
 
 const T = '帮我写个单元测试';
 const R = '帮我看下这个日志';
@@ -194,5 +195,86 @@ assert.equal(
   '我重新部署了，你可以E2E测试了',
   '命令整行的内容部分应能命中历史候选',
 );
+
+// —— 转录双预算裁剪 trimTranscript ——
+// 中文字符 UTF-8 每字 3 字节：仅按字符预算（12000）截断时实际字节可轻易
+// 突破 maxInputBytes（4096）；字节裁剪应兜底，不抛错、不劈裂多字节字符。
+{
+  // 单条极长中文消息：字符预算内但字节超限 → 字节级截断到预算内（不劈裂字符）
+  const longZh = '帮我'.repeat(3000); // 6000 字符 ≈ 18000 字节
+  const t1 = trimTranscript([{ role: 'user', text: longZh }], [1], 12000, 4096);
+  assert.equal(t1.pairs.length, 1, '单对场景至少保留最新一对');
+  const framed1 = `[User Message]\n${t1.pairs[0].text}`;
+  assert.ok(Buffer.byteLength(framed1, 'utf8') <= 4096 + 24, '截断后框架字节不超过预算（含少量分隔开销余量）');
+  assert.ok(!t1.pairs[0].text.includes('�'), '不得产生半个多字节字符（替换符）');
+  assert.ok(t1.pairs[0].text.endsWith('帮我') || t1.pairs[0].text === '', '截断应在完整码点边界');
+
+  // 多对场景：老对先被丢弃，最新一对保留
+  const older = '旧消息'.repeat(500);
+  const newer = '新消息'.repeat(800);
+  const t2 = trimTranscript(
+    [{ role: 'user', text: older }, { role: 'assistant', text: '老回复'.repeat(500) }, { role: 'user', text: newer }],
+    [10, 20, 30],
+    12000,
+    2048,
+  );
+  assert.ok(t2.pairs.length >= 1, '至少保留最新一对');
+  assert.deepEqual(t2.sourceMessageSeqs.slice(-1), [30], '源 seq 与最新对同步保留');
+  const framed2 = t2.pairs.map(p => `[${p.role === 'user' ? 'User Message' : 'Assistant Response'}]\n${p.text}`).join('\n\n');
+  assert.ok(Buffer.byteLength(framed2, 'utf8') <= 2048 + 48, '多对裁剪后框架字节在预算内');
+  assert.equal(t2.pairs[t2.pairs.length - 1].role, 'user', '最新一对（新消息）保留');
+
+  // ASCII 内容：字符预算即字节近似，不受字节裁剪误伤（只做防御）
+  const ascii = 'run the tests now and then commit'.repeat(20);
+  const t3 = trimTranscript([{ role: 'user', text: ascii }], [1], 12000, 4096);
+  assert.ok(Buffer.byteLength(`[User Message]\n${t3.pairs[0].text}`, 'utf8') <= 4096 + 24);
+
+  // 空输入
+  const t4 = trimTranscript([], [], 12000, 4096);
+  assert.deepEqual(t4, { pairs: [], sourceMessageSeqs: [] });
+}
+
+// —— HotnessTable 堆淘汰回归：超上限时淘汰 lastSeq 最小的条目 ——
+{
+  const { HOT_TABLE_MAX_ENTRIES: CAP } = await import('../src/hotness.ts');
+  const hot = new HotnessTable();
+  // 灌入 CAP + 若干不同文本（各会话交替，避免同会话相邻去重吞掉插入）。
+  for (let i = 0; i < CAP + 10; i++) {
+    hot.consume({
+      type: 'user/message',
+      seq: i + 1,
+      data: { content: [{ type: 'text', text: `消息${String(i).padStart(4, '0')}` }], source: { kind: 'user' } },
+    }, `s${i}`);
+  }
+  assert.ok(hot.size <= CAP, '表大小不超过上限');
+  // seq 最小（=1 最早插入）的「消息0000」应被淘汰出表。
+  assert.ok(!hot.snapshot(0).some(e => e.text === '消息0000'), '最旧条目被淘汰');
+  // lazy 更新：已被淘汰文本再次出现（seq 很大）→ 重新入表；不因陈旧堆项丢条目。
+  hot.consume({
+    type: 'user/message',
+    seq: CAP + 500,
+    data: { content: [{ type: 'text', text: '消息0000' }], source: { kind: 'user' } },
+  }, 'other-session');
+  assert.ok(hot.snapshot(0).some(e => e.text === '消息0000'), '重出现条目重新被跟踪');
+  // 既有条目跨会话再次出现：count 累计、lastSeq 推进（lazy 新版本入堆不破坏淘汰）
+  const fresh = hot.snapshot(0).find(e => e.text === '消息0001');
+  const before = fresh?.count ?? 0;
+  hot.consume({
+    type: 'user/message',
+    seq: CAP + 501,
+    data: { content: [{ type: 'text', text: '消息0001' }], source: { kind: 'user' } },
+  }, 'other-session-2');
+  const after = hot.snapshot(0).find(e => e.text === '消息0001');
+  assert.equal(after?.count, before + 1, '跨会话再次出现累计频次');
+  // 继续灌到再次超限：不抛错、大小仍受控（堆内陈旧版本被惰性跳过）
+  for (let i = 0; i < 5; i++) {
+    hot.consume({
+      type: 'user/message',
+      seq: CAP + 600 + i,
+      data: { content: [{ type: 'text', text: `压测文本${i}` }], source: { kind: 'user' } },
+    }, `s-press-${i}`);
+  }
+  assert.ok(hot.size <= CAP, '连续触发淘汰后大小仍受控');
+}
 
 console.log('✅ 全部冒烟测试通过');

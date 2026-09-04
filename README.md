@@ -105,9 +105,10 @@ dsh plugin --profile web add .
 ```
 src/index.ts         host 入口：turn/end(completed) → 有界生成建议
 src/generate.ts      转录提取 → 脱敏 → ctx.llm.stream → 净化
+src/transcript.ts    转录纯逻辑：字符 + UTF-8 字节双预算裁剪（纯函数，可单测）
 src/sanitize.ts      脱敏 / 净化 / 语义过滤 / 截断（纯函数）
-src/settings.ts      settings 命名空间 + host→client 实时推送通道
-src/hotness.ts       跨会话热度表（增量去重、内存上界）
+src/settings.ts      settings 命名空间 + host→client 实时推送通道（尾写合并）
+src/hotness.ts       跨会话热度表（增量去重、最小堆淘汰、内存上界）
 src/projection.ts    suggestGhost 投影 last-wins fold
 src/client/          幽灵渲染、历史匹配、逐词切分、快捷键、设置卡片
 scripts/             冒烟测试与会话日志回放

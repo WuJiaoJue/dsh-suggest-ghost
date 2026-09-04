@@ -104,9 +104,10 @@ You can also override by id in cordis.patch.yml (as initial values for the above
 ```
 src/index.ts         host entry: turn/end(completed) → bounded suggestion generation
 src/generate.ts      transcript extraction → sanitization → ctx.llm.stream → purification
+src/transcript.ts    pure transcript logic: char + UTF-8 byte dual-budget trimming (unit-testable)
 src/sanitize.ts      sanitize / purify / semantic filter / truncation (pure functions)
-src/settings.ts      settings namespace + real-time host→client push channel
-src/hotness.ts       cross-session hotness table (incremental dedup, bounded in-memory)
+src/settings.ts      settings namespace + real-time host→client push channel (tail-write coalescing)
+src/hotness.ts       cross-session hotness table (incremental dedup, min-heap eviction, bounded memory)
 src/projection.ts    suggestGhost projection last-wins fold
 src/client/          ghost rendering, history matching, word splitting, shortcuts, settings card
 scripts/             smoke tests and session log replay
