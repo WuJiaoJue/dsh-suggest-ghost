@@ -8,10 +8,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import {
   BlockAssembler,
   createUserMessage,
-  deepFreeze,
 } from '@deepseek-ai/dsh-llm';
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm';
-import type { Session } from '@deepseek-ai/dsh-session';
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
 import { deriveEventMessage } from '@deepseek-ai/dsh-session/surface';
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout';
 import { PROJECTION_KEY } from './domain.js';
@@ -29,8 +28,48 @@ import {
 } from './transcript.js';
 import type { Transcript, TranscriptPair } from './transcript.js';
 
+/**
+ * 读取会话完整事件日志（跨代兼容）。
+ * DSH 0.1.2 起 `Session.events` getter 被移除：公开面改为 `snapshotEvents()`
+ * （无参调用返回全量冻结数组，语义与旧 `events` 一致）；≤0.1.1 内核只有
+ * `events` getter、没有 `snapshotEvents`。两边的属性在对方那一代都不存在，
+ * 类型上互不可见，这里按运行时能力探测读取。两者都缺失（不该出现的代际
+ * 组合）时回退空数组——回合结束路径绝不能再因日志读取崩掉。
+ */
+export function sessionEvents(session: Session): readonly SessionEvent[] {
+  const reader = session as unknown as {
+    snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly SessionEvent[];
+    events?: readonly SessionEvent[];
+  };
+  if (typeof reader.snapshotEvents === 'function') return reader.snapshotEvents();
+  return reader.events ?? [];
+}
+
 /** 本能力所属的辅助请求超时错误码。 */
 export const SUGGEST_TIMEOUT_CODE = 'SUGGEST_GHOST_TIMEOUT';
+
+/**
+ * 就地深冻结：迭代遍历，循环引用安全，不受调用栈深度限制。
+ * 本地实现而非从内核导入——DSH 0.1.1 由 dsh-llm 导出该 helper，0.1.2 把它搬到新增的
+ * dsh-util-values 并停止转发，而 dsh-util-values 在 0.1.1 内核里不存在，两个导入源在
+ * 对方那一代都会让整个模块链接失败。跳过 AbortSignal 是必须的：它是请求的实时取消
+ * 通道，冻结会让 abort 失效。
+ */
+function deepFreeze<T>(value: T): T {
+  const seen = new WeakSet<object>();
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (node instanceof AbortSignal || seen.has(node)) continue;
+    seen.add(node);
+    Object.freeze(node);
+    for (const key of Object.keys(node)) {
+      pending.push((node as Record<string, unknown>)[key]);
+    }
+  }
+  return value;
+}
 
 /** host 插件配置（未校验版本）。 */
 export interface Config {
@@ -151,7 +190,7 @@ export function buildTranscript(
   maxTranscriptChars: number,
   maxInputBytes: number,
 ): Transcript | undefined {
-  const events = session.events;
+  const events = sessionEvents(session);
   let lastTurn = 0;
   const turnStarts: Array<{ readonly turn: number; readonly seq: number }> = [];
   for (const event of events) {

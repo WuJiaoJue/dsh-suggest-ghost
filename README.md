@@ -69,6 +69,7 @@ dsh plugin --profile web add .
 |---|---|
 | LLM 下一条建议 | 启用开关、输出令牌上限、建议字符上限、参考回合数、转录字符预算、超时（毫秒）、采纳快捷键、provider / model 路由（留空继承主请求） |
 | 历史前缀补全 | 启用开关、跨会话搜索、最大历史条目、最少输入字符、逐词采纳 |
+| 热度管理 | 跨会话高频短语列表：固定（不参与淘汰、候选恒置顶）、删除、手工新增（默认固定）、清空全部——即时生效，无需保存 |
 
 也可以在 cordis.patch.yml 按 id 覆盖（作为上述项的初始值）：
 
@@ -98,7 +99,22 @@ dsh plugin --profile web add .
 
 ## 兼容性
 
-> 在 dsh `0.1.0-rc.6` 上开发验证；client 端写法已兼容 rc.7 的严格门控 context。升级宿主版本后建议回归一遍幽灵显示与设置卡片。
+两代内核均实测通过（2026-09-07）：
+
+| DSH 内核 | host 入口链接 | 运行时符号 | 真实启动（headless） | 真实启动（web） |
+|---|---|---|---|---|
+| `0.1.1-rc.2` | ✅ | ✅ 8/8 | ✅ 过插件阶段 | ✅ client bundle HTTP 200 |
+| `0.1.2-rc.1` | ✅ | ✅ 8/8 | ✅ 过插件阶段 | ✅ client bundle HTTP 200 |
+
+peer 依赖写成 `^0.1.1-rc.2 || ^0.1.2-rc.1` 这种**逐代枚举**，而不是 `>=0.1.1-rc.2`：node-semver 默认不把预发布版算进任何范围，只有比较符带同一 `[major.minor.patch]` 元组时才放行，所以 `^0.1.1-rc.2` 对 `0.1.2-rc.1` 为假、`*` 同样为假 —— 跨代没有区间写法。**上游每发布一个新的 rc 代次，peer 就要补一个枚举项**，否则安装期即因 peer 不满足而失败。
+
+一份代码跨代所依赖的三处取舍：
+
+- **不用 `settingsNamespace()`**：该 helper 在 `0.1.2` 已被删除，运行时导入会让整个模块链接失败。它只是校验后原样返回 brand 字符串，故改用 `'suggest-ghost' as SettingsNamespace` 字面量断言，格式校验仍由两代的 `ctx.settings.register()` 内部执行。
+- **不导入 `deepFreeze`**：`0.1.1` 由 `dsh-llm` 导出，`0.1.2` 把它迁到新增的 `dsh-util-values` 并停止转发，而该包在 `0.1.1` 内核中不存在 —— 换导入源只会反向破坏另一代，因此 `src/generate.ts` 自带一份等价实现（迭代遍历、循环引用安全、跳过 `AbortSignal`）。
+- **client 端不从 `@deepseek-ai/dsh-client-runtime` 取类型**：该包是 `0.1.1` 内核特有，`0.1.2` 已拆走。`lib/client.js` 实测零内核导入，跨代无关。
+
+复现方式：为待测内核建隔离 profile（`$DSH_HOME` 指向临时目录，`node_modules` 用 `cp -al` 硬链接对应内核树，避免向上解析撞到另一代的树），先 `dsh --profile <p> --dump-config` 校验 manifest 组装，再 `dsh --profile <p> "say hi"` 与 `dsh --profile <p> -- --no-open --port <p>` 观察插件加载。两代 headless 启动都停在 `MISSING_CREDENTIAL`（临时 home 无凭据），该点在插件加载之后。
 
 ## 开发
 
@@ -107,8 +123,9 @@ src/index.ts         host 入口：turn/end(completed) → 有界生成建议
 src/generate.ts      转录提取 → 脱敏 → ctx.llm.stream → 净化
 src/transcript.ts    转录纯逻辑：字符 + UTF-8 字节双预算裁剪（纯函数，可单测）
 src/sanitize.ts      脱敏 / 净化 / 语义过滤 / 截断（纯函数）
-src/settings.ts      settings 命名空间 + host→client 实时推送通道（尾写合并）
-src/hotness.ts       跨会话热度表（增量去重、最小堆淘汰、内存上界）
+src/settings.ts      settings 命名空间 + host→client 推送（_push）与 client→host 操作通道（_ops，尾写合并）
+src/hotness.ts       跨会话热度表（增量去重、最小堆淘汰、内存上界、固定/管理 API）
+src/hotness-store.ts 热度持久化（storageDomain 域、回合边界合并落盘、重启恢复合并、管理 ops 应用）
 src/projection.ts    suggestGhost 投影 last-wins fold
 src/client/          幽灵渲染、历史匹配、逐词切分、快捷键、设置卡片
 scripts/             冒烟测试与会话日志回放
@@ -116,13 +133,16 @@ scripts/             冒烟测试与会话日志回放
 
 ```bash
 pnpm run build       # tsc 编译 host + esbuild 打包 client → lib/
-pnpm run test:smoke  # 纯函数冒烟测试
+pnpm run test:smoke  # 纯函数冒烟测试（含热度持久化语义）
+pnpm run test:e2e    # 真实 storage 栈端到端：落盘 → 重启恢复合并
 pnpm run replay      # 用真实会话日志回放补全管线
 ```
 
 ## 已知限制
 
-- 跨会话热度表是内存态：DSH 重启后从零累积（会话内历史补全不受影响）
+- 跨会话热度表已持久化（宿主 storage 域，落 `~/.dsh/storages/suggest_ghost_hotness.json`）：重启后频次恢复，不再从零累积；宿主无 storage 域（如旧版本）时自动降级为内存态，重启清零
+- 热度管理面板显示并过滤的是推送的 top-K 快照（默认 50 条，「共 N 条」展示全量）；更大范围的主机侧搜索未做
+- 删除只清当前统计——再次输入同文本会重新计入；「固定」才是不被淘汰的语义
 - LLM 建议只覆盖当前会话；把其他会话文本并作候选需开启「跨会话搜索」
 - 每个完成回合都会调一次建议模型（与输入框是否有内容无关），不需要时可在设置里关闭省 token
 

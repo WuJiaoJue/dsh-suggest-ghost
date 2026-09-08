@@ -23,8 +23,9 @@
  * @module dsh-suggest-ghost/client/settings-card
  */
 
-import { useEffect, useState, type ReactElement } from 'react';
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
+import type { SettingsScope } from '@deepseek-ai/dsh-settings';
+import type { HotnessOp } from '../domain.ts';
 import { keyEventToSpec } from './keyspec.ts';
 import { useGhostT, type GhostLang, type LocaleFaceLike } from './useGhostT.ts';
 
@@ -211,10 +212,26 @@ const zhStrings = {
   /** 快捷键控件 */
   keyCapturing: '按下组合键…（Esc 取消）',
   keyEmpty: '点击设置快捷键',
+  // —— 热度管理 ——
+  sectionHotness: '热度管理（跨会话高频短语）',
+  hotHint: '即时生效，无需保存。删除只清当前统计（再次输入会重新计入）；固定后不参与淘汰、跨会话候选恒置顶。',
+  hotSearch: '在下方列表中过滤…',
+  hotEmpty: '暂无热度条目——正常使用几个回合后自动累积。',
+  hotNoMatch: '没有匹配的条目（仅过滤当前显示的 top-K）。',
+  hotAdd: '添加',
+  hotAddPlaceholder: '手工新增一条候选短语…',
+  hotPin: '固定',
+  hotUnpin: '取消固定',
+  hotPinnedBadge: '已固定',
+  hotDelete: '删除',
+  hotClear: '清空全部',
+  hotClearConfirm: '确认清空？',
+  hotMeta: (total: number, shown: number): string =>
+    total > shown ? `共 ${total} 条，显示热度最高的 ${shown} 条` : `共 ${total} 条`,
 } as const;
 
 /** en 字典：映射类型约束与 zh 键集完全一致（缺键/多键均为编译期错误）。 */
-const enStrings: { [K in keyof typeof zhStrings]: string } = {
+const enStrings: { [K in keyof typeof zhStrings]: (typeof zhStrings)[K] } = {
   description:
     'Input prediction: history prefix completion + LLM next suggestion (while the draft is empty). Changes take effect right after saving.',
   unsaved: 'Unsaved',
@@ -230,10 +247,26 @@ const enStrings: { [K in keyof typeof zhStrings]: string } = {
   optionOff: 'Off',
   keyCapturing: 'Press a key combo… (Esc to cancel)',
   keyEmpty: 'Click to set a shortcut',
+  // —— Hotness management ——
+  sectionHotness: 'Hotness management (frequent cross-session phrases)',
+  hotHint: 'Takes effect immediately, no save needed. Delete only clears the current tally (typing it again re-counts); pinned entries are exempt from eviction and always lead cross-session candidates.',
+  hotSearch: 'Filter the list below…',
+  hotEmpty: 'No entries yet — they accumulate automatically after a few turns of normal use.',
+  hotNoMatch: 'No matching entries (filters the displayed top-K only).',
+  hotAdd: 'Add',
+  hotAddPlaceholder: 'Manually add a candidate phrase…',
+  hotPin: 'Pin',
+  hotUnpin: 'Unpin',
+  hotPinnedBadge: 'Pinned',
+  hotDelete: 'Delete',
+  hotClear: 'Clear all',
+  hotClearConfirm: 'Confirm clear?',
+  hotMeta: (total: number, shown: number): string =>
+    total > shown ? `${total} total, showing the top ${shown} by heat` : `${total} total`,
 };
 
-/** 单语言 chrome 文案字典类型（zh/en 通用）。 */
-export type GhostStrings = { [K in keyof typeof zhStrings]: string };
+/** 单语言 chrome 文案字典类型（zh/en 通用；值随 zh 源字典，含函数成员）。 */
+export type GhostStrings = { [K in keyof typeof zhStrings]: (typeof zhStrings)[K] };
 
 /** 全部语言字典（键集一致，由 enStrings 的映射类型保证）。 */
 const GHOST_STRINGS: Record<GhostLang, GhostStrings> = { zh: zhStrings, en: enStrings };
@@ -255,6 +288,10 @@ const CARD_CSS = [
   '.sgc-readOnly{color:var(--dsw-alias-label-tertiary);margin:12px 0 0;font-size:12px;line-height:1.5}',
   '.sgc-section{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:1.5;margin:14px 0 0}',
   '.sgc-section+.sgc-field{border-top:0}',
+  '.sgc-sectionBtn{appearance:none;width:100%;font:inherit;background:none;border:0;text-align:left;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:1.5;margin:14px 0 0;padding:0}',
+  '.sgc-sectionBtn:hover .sgc-sectionBtnText{color:var(--dsw-alias-label-secondary)}',
+  '.sgc-sectionBtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:4px}',
+  '.sgc-sectionBtnText{min-width:0}',
   '.sgc-field{display:flex;flex-direction:column;gap:6px;padding:12px 0}',
   '.sgc-field+.sgc-field{border-top:1px solid var(--dsw-alias-border-l2)}',
   '.sgc-fieldHead{display:flex;align-items:center;gap:8px}',
@@ -277,6 +314,23 @@ const CARD_CSS = [
   '.sgc-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
   '.sgc-save:disabled,.sgc-discard:disabled{opacity:.4;cursor:default}',
   '.sgc-save:focus-visible,.sgc-discard:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+  // —— 热度管理分组 ——
+  '.sgc-hotList{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;max-height:320px;overflow-y:auto}',
+  '.sgc-hotRow{display:flex;align-items:center;gap:8px;padding:6px 10px;min-width:0}',
+  '.sgc-hotRow+.sgc-hotRow{border-top:1px solid var(--dsw-alias-border-l2)}',
+  '.sgc-hotRow:hover{background:var(--dsw-alias-bg-layer-2)}',
+  '.sgc-hotPinFlag{flex:none;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 7px;font-size:11px;font-weight:500;line-height:16px;white-space:nowrap}',
+  '.sgc-hotText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}',
+  '.sgc-hotCount{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}',
+  '.sgc-hotBtn{flex:none;appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);background:none;border-radius:6px;padding:2px 8px;font-size:12px;line-height:1.4;color:var(--dsw-alias-label-secondary)}',
+  '.sgc-hotBtn:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
+  '.sgc-hotBtn:disabled{opacity:.4;cursor:default}',
+  '.sgc-hotBtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+  '.sgc-hotBtnDanger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
+  '.sgc-hotAdd{display:flex;gap:8px;margin-top:8px}',
+  '.sgc-hotAdd .sgc-input{flex:1;min-width:0;height:30px;font-size:12px}',
+  '.sgc-hotMeta{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:8px 0 0}',
+  '.sgc-hotDanger{color:var(--dsw-alias-state-error-primary)}',
 ].join('');
 
 /** 样式注入标记（幂等：重复加载不重复插入）。 */
@@ -359,6 +413,155 @@ function KeyField({ id, value, disabled, t, onChange }: {
   );
 }
 
+/** `_push` 载荷里的热度条目（管理面板消费）。 */
+interface HotPushEntry {
+  readonly text: string;
+  readonly count: number;
+  readonly pinned?: boolean;
+}
+
+/** 热度管理分组：列表（固定/删除）、新增、清空。操作经 `_ops` 通道**即时生效**
+ * （scope.set 直接写入，不进卡片的暂存/保存流程）；列表数据来自 `_push`
+ * 实时推送，host 消费后回推最新状态，本组件随订阅无刷新重渲染。 */
+function HotnessSection({ scope, pushRaw, writable, busy, lang, t }: {
+  scope: SettingsScope<Record<string, unknown>>;
+  /** 当前 `_push` 字段原始值（由卡片从 scope 快照透传）。 */
+  pushRaw: unknown;
+  writable: boolean;
+  busy: boolean;
+  lang: GhostLang;
+  t: GhostStrings;
+}): ReactElement {
+  const [search, setSearch] = useState('');
+  const [adding, setAdding] = useState('');
+  const [confirmClear, setConfirmClear] = useState(false);
+  const opsRev = useRef(0);
+  // 清空按钮的双击确认：3 秒未确认自动复位。
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = window.setTimeout(() => setConfirmClear(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [confirmClear]);
+
+  const disabled = !writable || busy;
+  let hot: readonly HotPushEntry[] = [];
+  let total = 0;
+  if (typeof pushRaw === 'string' && pushRaw !== '' && pushRaw !== 'null') {
+    try {
+      const parsed = JSON.parse(pushRaw) as { hot?: HotPushEntry[] | null; total?: number };
+      if (Array.isArray(parsed.hot)) hot = parsed.hot;
+      if (typeof parsed.total === 'number') total = parsed.total;
+    } catch { /* 残缺推送：展示空列表，等下一次推送自愈 */ }
+  }
+  if (!Number.isFinite(total) || total < hot.length) total = hot.length;
+
+  /** 发送一批管理操作（幂等协议；rev 仅用于 client 侧递增）。 */
+  const sendOps = (ops: readonly HotnessOp[]): void => {
+    if (!writable) return;
+    opsRev.current += 1;
+    void scope.set('_ops', JSON.stringify({ rev: opsRev.current, ops }));
+  };
+
+  const needle = search.trim().toLowerCase();
+  const visible = needle === ''
+    ? hot
+    : hot.filter((entry) => entry.text.toLowerCase().includes(needle));
+
+  return (
+    <>
+      <p className="sgc-hint">{t.hotHint}</p>
+      <input
+        className="sgc-input"
+        type="text"
+        aria-label={t.hotSearch}
+        placeholder={t.hotSearch}
+        value={search}
+        disabled={disabled}
+        onChange={e => setSearch(e.target.value)}
+      />
+      {hot.length === 0 ? (
+        <p className="sgc-hint">{t.hotEmpty}</p>
+      ) : visible.length === 0 ? (
+        <p className="sgc-hint">{t.hotNoMatch}</p>
+      ) : (
+        <div className="sgc-hotList" role="list">
+          {visible.map((entry) => (
+            <div className="sgc-hotRow" role="listitem" key={entry.text}>
+              {entry.pinned === true && <span className="sgc-hotPinFlag">{t.hotPinnedBadge}</span>}
+              <span className="sgc-hotText" title={entry.text}>{entry.text}</span>
+              <span className="sgc-hotCount">×{entry.count}</span>
+              <button
+                type="button"
+                className="sgc-hotBtn"
+                disabled={disabled}
+                onClick={() => sendOps([{ op: 'pin', text: entry.text, pinned: entry.pinned !== true }])}
+              >
+                {entry.pinned === true ? t.hotUnpin : t.hotPin}
+              </button>
+              <button
+                type="button"
+                className="sgc-hotBtn sgc-hotBtnDanger"
+                disabled={disabled}
+                onClick={() => sendOps([{ op: 'delete', text: entry.text }])}
+              >
+                {t.hotDelete}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="sgc-hotAdd">
+        <input
+          className="sgc-input"
+          type="text"
+          aria-label={t.hotAddPlaceholder}
+          placeholder={t.hotAddPlaceholder}
+          value={adding}
+          disabled={disabled}
+          onChange={e => setAdding(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && adding.trim() !== '' && !disabled) {
+              // 手工新增默认固定：意图是「让它成为候选」，未固定的新条目频次 1
+              // 会被真实高频挤到 top-K 之外，用户会以为添加失败。
+              sendOps([{ op: 'add', text: adding.trim(), pinned: true }]);
+              setAdding('');
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="sgc-hotBtn"
+          disabled={disabled || adding.trim() === ''}
+          onClick={() => {
+            sendOps([{ op: 'add', text: adding.trim(), pinned: true }]);
+            setAdding('');
+          }}
+        >
+          {t.hotAdd}
+        </button>
+      </div>
+      <div className="sgc-hotMeta">
+        <span className="sgc-hint">{t.hotMeta(total, hot.length)}</span>
+        <button
+          type="button"
+          className={`sgc-hotBtn sgc-hotBtnDanger${confirmClear ? ' sgc-hotConfirming' : ''}`}
+          disabled={disabled || hot.length === 0}
+          onClick={() => {
+            if (!confirmClear) {
+              setConfirmClear(true);
+              return;
+            }
+            setConfirmClear(false);
+            sendOps([{ op: 'clear' }]);
+          }}
+        >
+          {confirmClear ? t.hotClearConfirm : t.hotClear}
+        </button>
+      </div>
+    </>
+  );
+}
+
 /** 设置卡片：读取/编辑/保存 suggest-ghost 命名空间（默认收起，点击头部展开）。
  * 文案跟随宿主界面语言（locale 缺失回退中文），语言切换实时重渲染。 */
 export function SuggestGhostCard({ scope, locale }: SuggestGhostCardProps): ReactElement | null {
@@ -371,6 +574,8 @@ export function SuggestGhostCard({ scope, locale }: SuggestGhostCardProps): Reac
   const [saved, setSaved] = useState(false);
   // 折叠状态（卡片本地）：默认收起；折叠不丢失 staged edits。
   const [open, setOpen] = useState(false);
+  // 热度管理分组折叠：默认收起（管理列表较长，配置区保持紧凑）。
+  const [hotOpen, setHotOpen] = useState(false);
 
   if (snap.status === 'unavailable') return null; // 命名空间未暴露时不显示卡片
   const value = (snap.value ?? {}) as Value;
@@ -486,6 +691,25 @@ export function SuggestGhostCard({ scope, locale }: SuggestGhostCardProps): Reac
           {llmFields.map(renderField)}
           <div className="sgc-section">{t.sectionHistory}</div>
           {historyFields.map(renderField)}
+          <button
+            type="button"
+            className="sgc-sectionBtn"
+            aria-expanded={hotOpen}
+            onClick={() => setHotOpen(o => !o)}
+          >
+            <span className="sgc-sectionBtnText">{t.sectionHotness}</span>
+            <ChevronDown className={hotOpen ? 'sgc-chevron sgc-chevronOpen' : 'sgc-chevron'} />
+          </button>
+          {hotOpen && (
+            <HotnessSection
+              scope={scope}
+              pushRaw={value._push}
+              writable={writable}
+              busy={busy}
+              lang={lang}
+              t={t}
+            />
+          )}
           <div className="sgc-footer">
             {saved && <span className="sgc-status" role="status">{t.saved}</span>}
             <button className="sgc-discard" disabled={!isDirty || busy} onClick={discard}>{t.discard}</button>

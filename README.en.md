@@ -68,6 +68,7 @@ card copy (field labels/hints, buttons, badges) follows the host DSH UI language
 |---|---|
 | LLM next-suggestion | enable toggle, max output tokens, max suggestion chars, reference turns, transcript char budget, timeout (ms), accept key, provider / model route (leave empty to inherit the main request) |
 | History prefix completion | enable toggle, cross-session search, max history entries, min input chars, word-by-word accept |
+| Hotness management | frequent cross-session phrases list: pin (exempt from eviction, always leads candidates), delete, manual add (pinned by default), clear all — takes effect immediately, no save needed |
 
 You can also override by id in cordis.patch.yml (as initial values for the above):
 
@@ -97,7 +98,22 @@ You can also override by id in cordis.patch.yml (as initial values for the above
 
 ## Compatibility
 
-> Developed and verified on dsh `0.1.0-rc.6`; the client code is already compatible with rc.7's stricter gated context. After upgrading the host version, it is recommended to regression-test ghost rendering and the settings card.
+Verified on both kernel generations (2026-09-07):
+
+| DSH kernel | host entry link | runtime symbols | real boot (headless) | real boot (web) |
+|---|---|---|---|---|
+| `0.1.1-rc.2` | ✅ | ✅ 8/8 | ✅ past the plugin stage | ✅ client bundle HTTP 200 |
+| `0.1.2-rc.1` | ✅ | ✅ 8/8 | ✅ past the plugin stage | ✅ client bundle HTTP 200 |
+
+Peer deps are written as an **explicit generation list** (`^0.1.1-rc.2 || ^0.1.2-rc.1`) rather than `>=0.1.1-rc.2`: node-semver excludes prereleases from every range unless a comparator carries the same `[major.minor.patch]` tuple, so `^0.1.1-rc.2` is false for `0.1.2-rc.1`, and so is `*` — there is no range form that spans generations. **Every time upstream ships a new rc generation, add another entry here**, otherwise installation fails the peer check.
+
+Three deliberate choices keep one codebase working across generations:
+
+- **No `settingsNamespace()`**: the helper was removed in `0.1.2`, and importing it at runtime makes the whole module fail to link. It only validated and returned the branded string unchanged, so the code asserts the literal instead (`'suggest-ghost' as SettingsNamespace`); format validation still happens inside `ctx.settings.register()` on both generations.
+- **No `deepFreeze` import**: `0.1.1` exports it from `dsh-llm`, `0.1.2` moved it into the new `dsh-util-values` and stopped re-exporting it — and that package does not exist on `0.1.1`, so switching the import source would only break the other generation. `src/generate.ts` ships an equivalent implementation (iterative traversal, cycle-safe, skips `AbortSignal`).
+- **The client bundle takes no types from `@deepseek-ai/dsh-client-runtime`**: that package is `0.1.1`-only and was split out in `0.1.2`. `lib/client.js` was measured to have zero kernel imports, so it is generation-independent.
+
+How to reproduce: build an isolated profile for the kernel under test (point `$DSH_HOME` at a temp directory and hardlink its `node_modules` to that kernel tree with `cp -al`, so upward resolution cannot leak into the other generation), then check manifest composition with `dsh --profile <p> --dump-config`, and watch plugin loading via `dsh --profile <p> "say hi"` and `dsh --profile <p> -- --no-open --port <p>`. Both headless runs stop at `MISSING_CREDENTIAL` (the temp home has no credentials) — a point after plugins have loaded.
 
 ## Development
 
@@ -106,8 +122,9 @@ src/index.ts         host entry: turn/end(completed) → bounded suggestion gene
 src/generate.ts      transcript extraction → sanitization → ctx.llm.stream → purification
 src/transcript.ts    pure transcript logic: char + UTF-8 byte dual-budget trimming (unit-testable)
 src/sanitize.ts      sanitize / purify / semantic filter / truncation (pure functions)
-src/settings.ts      settings namespace + real-time host→client push channel (tail-write coalescing)
-src/hotness.ts       cross-session hotness table (incremental dedup, min-heap eviction, bounded memory)
+src/settings.ts      settings namespace + host→client push (_push) and client→host ops channel (_ops, tail-write coalescing)
+src/hotness.ts       cross-session hotness table (incremental dedup, min-heap eviction, bounded memory, pin/manage APIs)
+src/hotness-store.ts hotness persistence (storageDomain unit, turn-boundary coalesced writes, restore-on-restart, ops application)
 src/projection.ts    suggestGhost projection last-wins fold
 src/client/          ghost rendering, history matching, word splitting, shortcuts, settings card
 scripts/             smoke tests and session log replay
@@ -115,13 +132,16 @@ scripts/             smoke tests and session log replay
 
 ```bash
 pnpm run build       # tsc compiles host + esbuild bundles client → lib/
-pnpm run test:smoke  # pure-function smoke tests
+pnpm run test:smoke  # pure-function smoke tests (incl. hotness persistence semantics)
+pnpm run test:e2e    # end-to-end over the real storage stack: persist → restart → restore
 pnpm run replay      # replay the completion pipeline with real session logs
 ```
 
 ## Known limitations
 
-- The cross-session hotness table is in-memory: it accumulates from zero after a DSH restart (in-session history completion is unaffected)
+- The cross-session hotness table is now persisted (host storage domain, lands in `~/.dsh/storages/suggest_ghost_hotness.json`): frequencies survive restarts instead of accumulating from zero; on hosts without the storage domain (older versions) it automatically degrades to in-memory only
+- The management panel lists and filters the pushed top-K snapshot (50 entries by default; "N total" shows the full count); host-side search beyond the top-K is not implemented
+- Delete only clears the current tally — typing the same text again re-counts; pin is the "never evicted" semantic
 - LLM suggestions cover only the current session; to include text from other sessions as candidates, enable "cross-session search"
 - Every completed turn triggers one suggestion model call (regardless of whether the input box has content); disable it in settings to save tokens if not needed
 

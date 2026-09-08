@@ -39,7 +39,23 @@ export interface SuggestGhostHotEntry {
   readonly text: string;
   /** 跨会话累计出现频次。 */
   readonly count: number;
+  /** 用户固定（管理面板置顶，不参与最近性淘汰）；仅 true 时携带。 */
+  readonly pinned?: boolean;
 }
+
+/**
+ * 热度管理单条操作（client 管理面板经 settings `_ops` 通道送达 host）。
+ * 所有操作幂等：重复执行无副作用（host 消费后立即清空 `_ops`，rev 仅用于
+ * client 侧递增标识，host 不依赖它去重）。`pull` 不是热度变更：client 切换
+ * 会话时请求 host 立即推送该会话的历史环（历史环只在事件到达时播种，
+ * pull 关闭「切会话后无历史」的窗口）。
+ */
+export type HotnessOp =
+  | { readonly op: 'delete'; readonly text: string }
+  | { readonly op: 'pin'; readonly text: string; readonly pinned: boolean }
+  | { readonly op: 'add'; readonly text: string; readonly pinned?: boolean }
+  | { readonly op: 'clear' }
+  | { readonly op: 'pull'; readonly sessionId: string };
 
 /**
  * `suggest-ghost/hot-index` 事件的载荷——跨会话历史热度快照。

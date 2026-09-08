@@ -18,16 +18,24 @@
  * @module dsh-suggest-ghost/client
  */
 
-import type {} from '@deepseek-ai/dsh-client-runtime';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation';
 import type { Context } from '@deepseek-ai/cordis';
-import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-runtime';
 import type { SuggestGhostProjection, SuggestGhostSuggested } from '../domain.ts';
 import { commonPrefixLength, extractHistory, historySuggestion, normalizeForMatch, stripCommandPrefix } from './history.ts';
 import { nextAcceptChunk } from './chunk.ts';
 import { keyCodeOf } from './keyspec.ts';
 import { SuggestGhostCard } from './settings-card.tsx';
 import type { LocaleFaceLike } from './useGhostT.ts';
+
+/**
+ * 宿主可观察快照的最小结构视图。不从 @deepseek-ai/dsh-client-runtime 导入：
+ * 该包是 0.1.1 内核特有，0.1.2 已把快照存储拆到 dsh-client-store，这里只用到
+ * getSnapshot / subscribe 两个成员，本地声明即可切断这条跨代漂移的类型依赖。
+ */
+interface ObservableSnapshot<T> {
+  getSnapshot(): T;
+  subscribe(listener: () => void): () => void;
+}
 
 /** 投影键（与 host 端 PROJECTION_KEY 一致）。 */
 const PROJECTION_KEY = 'suggestGhost';
@@ -38,6 +46,7 @@ const DEFAULT_ACCEPT_KEY = 'Tab';
 /** settings 命名空间（与 host 端一致）。 */
 const SETTINGS_NAMESPACE = 'suggest-ghost';
 
+
 /** 插件名（与 manifest id 一致）。 */
 const name = 'dsh-suggest-ghost';
 /** 所需服务：会话 face + 输入机 face（幽灵必需，rc.7 fiber 激活门控）。
@@ -46,17 +55,40 @@ const name = 'dsh-suggest-ghost';
  * 以免其缺失时连带 park 幽灵逻辑（locale 缺失只应让卡片回退中文）。 */
 const inject = ['conversation', 'sessions'];
 
-/** 事件目标是否为会话输入框 textarea（唯一位于 data-input-scroll 内的 textarea）。 */
-function isComposerTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLTextAreaElement)) return false;
-  return target.closest('[data-input-scroll]') !== null;
+/** composer 的双代选择器：≤0.1.1 是 textarea，0.1.2 起是 Lexical contenteditable
+ * （`data-composer-input` 标记，属 data-input-scroll 容器）。 */
+const COMPOSER_SELECTOR = '[data-input-scroll] textarea, [data-input-scroll] [data-composer-input]';
+
+/** 元素是否为会话输入框（textarea 或 composer contenteditable，均须位于 data-input-scroll 内）。 */
+function isComposerElement(el: Element | null): boolean {
+  if (el === null) return false;
+  const composer = el.closest('[data-input-scroll]') !== null
+    && (el.matches('textarea') || (el instanceof HTMLElement && el.isContentEditable));
+  return composer;
 }
 
-/** 会话快照中最新已完成回合号。 */
-function lastCompletedTurn(turnEnds: ReadonlyMap<number, number>): number | undefined {
-  let last: number | undefined;
-  for (const turn of turnEnds.keys()) last = turn;
-  return last;
+/** 事件目标是否为会话输入框。 */
+function isComposerTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && isComposerElement(target);
+}
+
+/** 光标是否位于输入框文本末尾：textarea 用 selectionStart/End，contenteditable 用 Selection API。 */
+function caretAtComposerEnd(el: HTMLElement): boolean {
+  if (el instanceof HTMLTextAreaElement) {
+    return el.selectionStart === el.value.length && el.selectionEnd === el.value.length;
+  }
+  const selection = document.getSelection();
+  if (selection === null || selection.rangeCount === 0 || !selection.isCollapsed) return false;
+  if (el.textContent === '') return true; // 空编辑器：光标必然在末尾（LLM 模式场景）
+  const range = selection.getRangeAt(0);
+  // 编辑器最后一个文本节点末尾
+  let last: Node | null = el.lastChild;
+  while (last !== null && last.lastChild !== null) last = last.lastChild;
+  if (range.endContainer === last) {
+    return range.endOffset === (last.textContent?.length ?? 0);
+  }
+  // 或光标落在编辑器最后一个子节点之后（Lexical 常见形态）
+  return range.endContainer === el && range.endOffset === el.childNodes.length;
 }
 
 /** 快捷键匹配：修饰键 + 主键（主键表见 keyspec.ts），如 Tab、Alt+S、Ctrl+Enter。
@@ -80,10 +112,11 @@ type GhostContent =
   | { kind: 'llm'; text: string; acceptKey: string }
   | { kind: 'history'; prefix: string; suffix: string; full: string };
 
-/** 幽灵文本 overlay 管理器：在 textarea 上创建/更新/移除灰色覆盖层。 */
+/** 幽灵文本 overlay 管理器：在输入框（textarea / Lexical contenteditable）上
+ * 创建/更新/移除灰色覆盖层。 */
 class GhostOverlay {
   private readonly el: HTMLDivElement;
-  private textarea: HTMLTextAreaElement | null = null;
+  private composer: HTMLElement | null = null;
   private readonly onScroll: () => void;
   private readonly styleTag: HTMLStyleElement;
 
@@ -107,48 +140,57 @@ class GhostOverlay {
       'visibility:hidden',
     ].join(';');
     this.onScroll = () => this.align();
-    // 幽灵激活时隐藏 textarea 原生 placeholder（二者同位置，避免重叠）。
-    // 用 class + CSS 而非改写 placeholder 属性：不干扰 React 对输入框的
-    // 受控渲染，重渲染后样式依然生效。
+    // 幽灵激活时隐藏原生 placeholder（二者同位置，避免重叠）。
+    // 幽灵显示期间隐藏占位文案（二者同位置，避免重叠）。关键：状态标记打在
+    // **我们自己的 overlay 节点**上（data-shown），经 body:has() 关联占位元素
+    // ——React/Lexical 重渲染会剥掉编辑器上的外来类（实测发生过），而 overlay
+    // 是插件私有节点不受影响，且与 DOM 顺序、textarea/contenteditable 形态
+    // 无关。规则覆盖两代 composer：
+    //  - textarea：原生 ::placeholder 伪元素；
+    //  - contenteditable（0.1.2 Lexical）：placeholder 兄弟节点带
+    //    `data-composer-placeholder` 稳定属性钩子。
     this.styleTag = document.createElement('style');
     this.styleTag.dataset.pluginCss = 'dsh-suggest-ghost';
-    this.styleTag.textContent = '.dsh-suggest-ghost-active::placeholder{opacity:0}';
+    this.styleTag.textContent = [
+      'body:has(#dsh-suggest-ghost-overlay[data-shown="1"]) [data-composer-placeholder]{opacity:0}',
+      'body:has(#dsh-suggest-ghost-overlay[data-shown="1"]) textarea::placeholder{opacity:0}',
+    ].join('\n');
     if (typeof document !== 'undefined') document.head.appendChild(this.styleTag);
   }
 
-  /** 当前绑定的 textarea（未绑定时为 null）。 */
-  get currentTextarea(): HTMLTextAreaElement | null {
-    return this.textarea;
+  /** 当前绑定的输入框（未绑定时为 null）。 */
+  get currentTextarea(): HTMLElement | null {
+    return this.composer;
   }
 
-  /** 绑定到当前 textarea（若变化则重建对齐）。 */
-  private attach(textarea: HTMLTextAreaElement): void {
-    if (this.textarea === textarea) return;
+  /** 绑定到当前输入框（若变化则重建对齐）。 */
+  private attach(composer: HTMLElement): void {
+    if (this.composer === composer) return;
     this.detach();
-    this.textarea = textarea;
-    const parent = textarea.parentElement;
+    this.composer = composer;
+    const parent = composer.parentElement;
     if (parent !== null && getComputedStyle(parent).position === 'static') {
       parent.style.position = 'relative';
     }
-    textarea.addEventListener('scroll', this.onScroll, { passive: true });
+    composer.addEventListener('scroll', this.onScroll, { passive: true });
     window.addEventListener('resize', this.onScroll);
     if (parent !== null) parent.appendChild(this.el);
     this.align();
   }
 
   private detach(): void {
-    if (this.textarea !== null) {
-      this.textarea.removeEventListener('scroll', this.onScroll);
-      this.textarea.classList.remove('dsh-suggest-ghost-active');
-      this.textarea = null;
+    if (this.composer !== null) {
+      this.composer.removeEventListener('scroll', this.onScroll);
+      this.composer = null;
     }
+    this.el.dataset.shown = '0';
     window.removeEventListener('resize', this.onScroll);
     this.el.remove();
   }
 
-  /** 对齐 overlay 到 textarea 内容区（含 padding 起点、跟随滚动）。 */
+  /** 对齐 overlay 到输入框内容区（含 padding 起点、跟随滚动）。 */
   private align(): void {
-    const ta = this.textarea;
+    const ta = this.composer;
     if (ta === null) return;
     const style = getComputedStyle(ta);
     const padLeft = parseFloat(style.paddingLeft) || 0;
@@ -182,14 +224,14 @@ class GhostOverlay {
       this.el.append(prefix, suffix);
     }
     this.el.style.visibility = 'visible';
-    this.textarea?.classList.add('dsh-suggest-ghost-active');
+    this.el.dataset.shown = '1';
     this.align();
   }
 
   hide(): void {
     this.el.style.visibility = 'hidden';
     this.el.textContent = '';
-    this.textarea?.classList.remove('dsh-suggest-ghost-active');
+    this.el.dataset.shown = '0';
   }
 
   dispose(): void {
@@ -211,6 +253,9 @@ function apply(ctx: Context): void {
     projectionFace: ObservableSnapshot<unknown>;
   } | null = null;
   let shown: { key: string; content: GhostContent } | null = null;
+  /** IME 组词进行中（compositionstart~end 之间）：组合预览文本与幽灵后缀
+   * 会叠在同一位置，必须抑制幽灵显示（Cursor/VSCode 同款处理）。 */
+  let composing = false;
 
   /** live 设置值（来自 suggest-ghost 命名空间；缺失时用默认）。 */
   let settings: {
@@ -230,6 +275,12 @@ function apply(ctx: Context): void {
     } | null;
     /** host 实时推送：跨会话热度快照。 */
     hot: readonly { text: string; count: number }[] | null;
+    /** host 实时推送：当前会话的最近用户输入文本（时间序，历史补全文本源）。 */
+    history: readonly string[];
+    /** history 所属会话；与当前会话不符时不做会话内补全（退化为纯热度候选）。 */
+    historySessionId: string | null;
+    /** 建议所属会话；与当前会话不符时隐藏 LLM 建议。 */
+    suggestionSessionId: string | null;
   } = {
     historyEnabled: true,
     historyCrossSession: false,
@@ -238,6 +289,9 @@ function apply(ctx: Context): void {
     wordAccept: true,
     suggestion: null,
     hot: null,
+    history: [],
+    historySessionId: null,
+    suggestionSessionId: null,
   };
 
   /** 解析当前会话绑定（会话切换时重建）。 */
@@ -250,7 +304,7 @@ function apply(ctx: Context): void {
     }
     if (id === lastSessionId && bound !== null) return;
     const actx = sessions.scope(id);
-    if (actx === undefined) return;
+    if (actx === undefined) return; // 会话未就绪：不推进 lastSessionId，下次列表事件重试
     const session = sessions.sessionOf(actx);
     if (session === undefined) return;
     const conversation = actx.get('conversation');
@@ -268,13 +322,11 @@ function apply(ctx: Context): void {
   /** 计算当前应显示的幽灵内容（null = 不显示）。 */
   const ghostContent = (): GhostContent | null => {
     if (bound === null) return null;
-    const snapshot = bound.session.getSnapshot() as {
-      running: boolean;
-      turnEnds: ReadonlyMap<number, number>;
-      nodes: readonly unknown[];
-      chat?: { nodes?: { values?: () => readonly unknown[] } };
-    };
+    if (composing) return null; // IME 组词中：组合预览与幽灵后缀重叠，抑制显示
+    // 0.1.2 会话快照只余 lifecycle 字段；本插件用到的仅剩 `running`。
+    const snapshot = bound.session.getSnapshot() as { running: boolean };
     const draft = bound.input.state.getSnapshot().draft;
+    const currentId = sessions.list.getSnapshot().current as string | undefined;
 
     // 模式 1：草稿非空 → 历史前缀补全（打分制：新近度为主、频次/热度为辅）。
     if (settings.historyEnabled && draft.trim() !== '') {
@@ -284,9 +336,12 @@ function apply(ctx: Context): void {
       // 非命令整行（普通用户消息）时 stripCommandPrefix 原样返回 draft。
       const contentDraft = stripCommandPrefix(draft);
       if (contentDraft.trim() === '') return null;
-      // 数据源：当前会话优先 chat.nodes（新装配视图），回退 legacy nodes（兼容）。
-      const chatValues = (snapshot as { chat?: { nodes?: { values?: () => readonly unknown[] } } }).chat?.nodes?.values?.() ?? [];
-      const history = extractHistory(chatValues.length > 0 ? chatValues : snapshot.nodes);
+      // 数据源：host 经 `_push` 推送的当前会话历史环（0.1.2 会话快照已不对
+      // 插件暴露对话 nodes）。会话不符时退化为纯热度候选（跨会话模式仍有
+      // 完整体验）。
+      const history = settings.historySessionId !== null && settings.historySessionId === currentId
+        ? settings.history
+        : [];
       // C：全局热度频次始终参与打分（host 无条件推送）；「跨会话搜索」开关
       // 只决定是否把其他会话的高频文本并入候选列表。
       const hot = settings.hot;
@@ -299,7 +354,7 @@ function apply(ctx: Context): void {
         hotCounts,
         extraCandidates: settings.historyCrossSession ? hot ?? undefined : undefined,
       });
-      if (full === undefined) return null;
+      if (full === undefined) return null; // 无候选（前缀超限/低于阈值等），本帧不显示
       // 渲染按「原始草稿 + 候选」公共前缀对齐（宽度/空白差异时仍正确）；
       // 对斜杠命令场景，prefix=draft 让幽灵对齐到已输入字符（含命令前缀），
       // suffix 从 contentDraft 与 full 的归一化匹配段截尾——见 historySuggestion。
@@ -307,19 +362,20 @@ function apply(ctx: Context): void {
       return { kind: 'history', prefix: draft, suffix: full.slice(common), full };
     }
 
-    // 模式 2：草稿为空 → LLM 建议（host 实时推送），要求回合已结束且 agent 空闲。
+    // 模式 2：草稿为空 → LLM 建议（host 实时推送）。过期判据（0.1.2 形态）：
+    // agent 运行中隐藏；建议属于其他会话时隐藏（host 推送按会话标记；运行中
+    // 的会话由 running 隐藏，回合结束的推送要么更新建议要么清空，无需再比
+    // 对会话快照里已移除的 turnEnds）。
     const suggestion = settings.suggestion;
     if (suggestion === null || suggestion === undefined) return null;
-    const lastTurn = lastCompletedTurn(snapshot.turnEnds);
     const stale = snapshot.running
-      || lastTurn === undefined
-      || suggestion.turn !== lastTurn;
+      || (settings.suggestionSessionId !== null && settings.suggestionSessionId !== currentId);
     if (stale) return null;
     return { kind: 'llm', text: suggestion.text, acceptKey: suggestion.acceptKey };
   };
 
-  /** 缓存的上一次 textarea 查询结果（React 可能重建节点；isConnected 校验兜底）。 */
-  let cachedTextarea: HTMLTextAreaElement | null = null;
+  /** 缓存的上一次输入框查询结果（React 可能重建节点；isConnected 校验兜底）。 */
+  let cachedComposer: HTMLElement | null = null;
 
   /** 渲染幽灵 overlay。 */
   const render = (): void => {
@@ -337,16 +393,17 @@ function apply(ctx: Context): void {
       ? `llm:${content.text}`
       : `hist:${content.prefix}|${content.suffix}`;
     if (shown !== null && shown.key === key) return; // 无变化
-    // 复用已绑定的 textarea；仅当缓存失效（React 重建/首次）时才查询 DOM。
+    // 复用已绑定的输入框；仅当缓存失效（React 重建/首次）时才查询 DOM。
+    // 双代选择器：textarea（≤0.1.1）或 contenteditable（0.1.2 Lexical）。
     const attached = overlay.currentTextarea;
-    let textarea = attached !== null && attached.isConnected
+    let composer = attached !== null && attached.isConnected
       ? attached
-      : cachedTextarea !== null && cachedTextarea.isConnected
-        ? cachedTextarea
-        : document.querySelector<HTMLTextAreaElement>('[data-input-scroll] textarea');
-    if (textarea === null) return; // 输入框尚未挂载，等待下次通知
-    cachedTextarea = textarea;
-    overlay.attach(textarea);
+      : cachedComposer !== null && cachedComposer.isConnected
+        ? cachedComposer
+        : document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+    if (composer === null) return; // 输入框尚未挂载，等待下次通知
+    cachedComposer = composer;
+    overlay.attach(composer);
     overlay.show(content);
     shown = { key, content };
   };
@@ -355,16 +412,34 @@ function apply(ctx: Context): void {
   // 注意：必须放在 render 等函数定义之后，否则同步调用 applySettings 会触发
   // const 函数声明前的 TDZ（原 rc.6 版靠 ctx.inject 的异步延迟规避，rc.7 下
   // 需要显式保证顺序）。
+  /** settingsScope 写面（经 `_ops` 反向通道请求 host 推送历史环）。 */
+  let ghostPullScope: { set: (key: string, value: unknown) => void } | null = null;
+  let pullRev = 0;
+  let lastPulledSessionId: string | undefined;
+  /** 请求 host 推送某会话的历史环（切会话/冷启动时关闭「无历史」窗口）。 */
+  const pullHistory = (sessionId: string): void => {
+    if (ghostPullScope === null) return;
+    if (sessionId === lastPulledSessionId || sessionId === settings.historySessionId) return;
+    lastPulledSessionId = sessionId;
+    pullRev += 1;
+    void ghostPullScope.set('_ops', JSON.stringify({ rev: pullRev, ops: [{ op: 'pull', sessionId }] }));
+  };
   const settingsScope = ctx.get('settingsScope');
   if (settingsScope !== undefined) {
     const scope = settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
     const applySettings = (): void => {
       const snap = scope.getSnapshot();
       const v = snap.value ?? {};
-      let pushed: { suggestion?: unknown; hot?: unknown } | null = null;
+      let pushed: {
+        suggestion?: unknown;
+        hot?: unknown;
+        history?: unknown;
+        historySessionId?: unknown;
+        suggestionSessionId?: unknown;
+      } | null = null;
       if (typeof v._push === 'string' && v._push !== '') {
         try {
-          pushed = JSON.parse(v._push) as { suggestion?: unknown; hot?: unknown };
+          pushed = JSON.parse(v._push) as typeof pushed;
         } catch {
           pushed = null;
         }
@@ -381,10 +456,16 @@ function apply(ctx: Context): void {
         hot: pushed?.hot === null || pushed?.hot === undefined
           ? null
           : (pushed.hot as typeof settings.hot),
+        history: Array.isArray(pushed?.history)
+          ? (pushed?.history as unknown[]).filter((t): t is string => typeof t === 'string')
+          : [],
+        historySessionId: typeof pushed?.historySessionId === 'string' ? pushed.historySessionId : null,
+        suggestionSessionId: typeof pushed?.suggestionSessionId === 'string' ? pushed.suggestionSessionId : null,
       };
       render();
     };
     scope.subscribe?.(applySettings);
+    ghostPullScope = scope;
     applySettings();
   }
 
@@ -392,8 +473,11 @@ function apply(ctx: Context): void {
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.isComposing) return;
     if (shown === null) return;
-    if (!(document.activeElement instanceof HTMLTextAreaElement)) return;
-    if (!isComposerTarget(document.activeElement)) return;
+    // 焦点必须在会话输入框内（textarea 或 0.1.2 contenteditable composer）。
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLTextAreaElement)
+      && !(focused instanceof HTMLElement && focused.isContentEditable)) return;
+    if (!isComposerTarget(focused)) return;
     const content = shown.content;
     const acceptKey = content.kind === 'llm' ? content.acceptKey : DEFAULT_ACCEPT_KEY;
     const matcher = parseAcceptKey(acceptKey);
@@ -436,10 +520,12 @@ function apply(ctx: Context): void {
     if (settings.wordAccept
       && event.code === 'ArrowRight'
       && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-      const ta = document.activeElement;
+      const ta = focused;
       const draftNow = bound !== null ? bound.input.state.getSnapshot().draft : '';
       const full = content.kind === 'llm' ? content.text : content.full;
-      if (ta.selectionStart !== draftNow.length || ta.selectionEnd !== draftNow.length) return;
+      // 光标必须在草稿末尾：textarea 用 selectionStart/End，contenteditable
+      // 用 Selection API（caretAtComposerEnd 统一两代）。
+      if (!caretAtComposerEnd(ta)) return;
       const matchBase = content.kind === 'history'
         ? stripCommandPrefix(draftNow)
         : draftNow;
@@ -472,6 +558,14 @@ function apply(ctx: Context): void {
   ctx.effect(() => {
       // 订阅：会话列表（切换信号）、会话快照、输入草稿、投影值。
     let unsubs: Array<() => void> = [];
+    let deferredRenders: Array<ReturnType<typeof setTimeout>> = [];
+    const scheduleDeferredRenders = (): void => {
+      for (const t of deferredRenders) clearTimeout(t);
+      // React 提交会话视图晚于 list store 更新：rebind 时 composer 可能尚未
+      // 挂载，show() 会找不到编辑器；错峰补渲染覆盖这个竞态（幽灵显示后
+      // 幂等，重复渲染无副作用）。
+      deferredRenders = [60, 300, 900].map((ms) => setTimeout(render, ms));
+    };
     const rebind = (): void => {
       for (const un of unsubs) un();
       unsubs = [];
@@ -483,21 +577,42 @@ function apply(ctx: Context): void {
           bound.projectionFace.subscribe(render),
         );
       }
+      scheduleDeferredRenders();
     };
     rebind();
     render(); // 初始渲染：不依赖订阅触发（修复：会话打开即检查幽灵）
+    if (lastSessionId !== undefined) pullHistory(lastSessionId); // 冷启动：拉当前会话历史环
+    if (lastSessionId !== undefined) pullHistory(lastSessionId); // 冷启动：拉当前会话历史环
     const onList = (): void => {
       // 会话切换（current 变化）→ 重绑订阅；否则仅渲染。
       const id = sessions.list.getSnapshot().current as string | undefined;
-      if (id !== lastSessionId) rebind();
+      if (id !== lastSessionId) {
+        rebind();
+        if (id !== undefined) pullHistory(id); // 切会话：请求 host 推送该会话历史环
+      }
       render();
     };
     const unList = sessions.list.subscribe(onList);
+    // IME 组词抑制：捕获监听（编辑器内组合事件会冒泡到 window）。组词开始
+    // 立即隐藏幽灵；结束（候选上屏）后按已提交草稿重新渲染。
+    const onCompositionStart = (): void => {
+      composing = true;
+      render();
+    };
+    const onCompositionEnd = (): void => {
+      composing = false;
+      render();
+    };
     window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('compositionstart', onCompositionStart, true);
+    window.addEventListener('compositionend', onCompositionEnd, true);
     return () => {
       unList();
       for (const un of unsubs) un();
+      for (const t of deferredRenders) clearTimeout(t);
       window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('compositionstart', onCompositionStart, true);
+      window.removeEventListener('compositionend', onCompositionEnd, true);
       overlay.dispose();
     };
   }, 'dsh-suggest-ghost: composer ghost render');

@@ -7,10 +7,14 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-import type { SettingsScope } from '@deepseek-ai/dsh-settings';
+import type { SettingsScope, SettingsNamespace } from '@deepseek-ai/dsh-settings';
 import type { Config } from './generate.js';
-/** 品牌命名空间名（Web allowlist 必须列出同一字符串：suggest-ghost）。 */
-export declare const SUGGEST_GHOST_NAMESPACE: import("@deepseek-ai/dsh-settings").SettingsNamespace;
+/**
+ * 品牌命名空间名（Web allowlist 必须列出同一字符串：suggest-ghost）。
+ * 不用官方 settingsNamespace() helper——它在 DSH 0.1.2 内核已被删除，运行时导入
+ * 会让本模块链接失败；该 helper 仅是校验后原样返回，同样的格式校验 register 内部两代都做。
+ */
+export declare const SUGGEST_GHOST_NAMESPACE: SettingsNamespace;
 /** settings 命名空间的取值类型。 */
 export interface SuggestGhostSettings {
     maxOutputTokens: number;
@@ -39,6 +43,15 @@ export interface SuggestGhostSettings {
      * 仅供只读消费，不参与 WebUI 表单（`hidden`）。
      */
     _push: string;
+    /**
+     * client → host 的热度管理操作队列（管理面板「热度管理」分组写入）。
+     * 存为 JSON 字符串：`{ rev, ops: [{op:'delete'|'pin'|'add', text, pinned?}] }`。
+     * host 经 `scope.watch` 消费：应用到热表并持久化后**立即清空**本字段——
+     * 一来防宿主重启后旧操作重放（如陈旧的 clear 把新数据清掉），二来清空本身
+     * 就是「已消费」信号；host 推回的最新 `_push` 即权威状态（client 无需 ACK）。
+     * 操作本身幂等（delete/pin/add 重复执行无副作用），rev 仅用于 client 侧递增。
+     */
+    _ops: string;
 }
 /** `_push` 的空载荷（JSON 字符串的 null 表示）。 */
 export declare const EMPTY_PUSH = "null";
