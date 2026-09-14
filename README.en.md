@@ -6,9 +6,9 @@
 
 **English** | [简体中文](README.md)
 
-[![version](https://img.shields.io/badge/version-0.2.0-0EA5E9)](https://github.com/WuJiaoJue/dsh-suggest-ghost)
+[![version](https://img.shields.io/badge/version-0.2.1-0EA5E9)](https://github.com/WuJiaoJue/dsh-suggest-ghost)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
 > Input prediction plugin for DeepSeek Harness Web: after each turn completes, one auxiliary LLM call predicts your next prompt and renders it as ghost text in the input box when the draft is empty; while you type, it completes from the current conversation history by prefix match. **Tab** accepts the whole suggestion, **→** accepts word by word.
 
