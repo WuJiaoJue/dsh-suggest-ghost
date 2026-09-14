@@ -1,9 +1,17 @@
 {
   "name": "dsh-suggest-ghost",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH Web 输入预测插件：回合结束后 LLM 生成下一条建议，输入框空草稿时渲染幽灵文本，Tab 采纳（Claude Code 风格）。host 端 + client 端，零核心改动。",
   "author": "WuJiaoJue",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WuJiaoJue/dsh-suggest-ghost.git"
+  },
+  "homepage": "https://github.com/WuJiaoJue/dsh-suggest-ghost",
+  "bugs": {
+    "url": "https://github.com/WuJiaoJue/dsh-suggest-ghost/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
