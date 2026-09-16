@@ -1,6 +1,9 @@
 /**
- * dsh-suggest-ghost host 端：监听已完成回合，有界生成下一条建议并写入
- * 会话日志，注册 `suggestGhost` 会话投影。零核心改动，纯插件挂载。
+ * dsh-suggest-ghost host 端：监听已完成回合，有界生成下一条建议并经 settings
+ * `_push` 实时推给 client，注册 `suggestGhost` 会话投影。零核心改动，纯插件挂载。
+ *
+ * 冷启动语义见 ./coldstart.ts：历史环按需从会话日志物化、建议按「回合是否仍是
+ * 最后一个已完成回合」语义校验，因此重启后打开页面即可用，无需等新回合。
  * @module dsh-suggest-ghost
  */
 import z from '@deepseek-ai/schemastery';

@@ -27,6 +27,13 @@ export interface HotnessOpsPayload {
 export interface HotnessPersistence {
     /** 持久域是否已就绪（open + 恢复合并完成）；未就绪时 flush 只保留脏标记。 */
     readonly ready: boolean;
+    /**
+     * 恢复阶段结束的信号：domain open + 恢复合并完成时兑现，open 失败（降级为
+     * 纯内存）时同样兑现——两种结局都意味着「热度表已不会再被异步改写」。宿主
+     * 未挂 storageDomain 时永不兑现：那种组合下没有异步恢复可等，启动瞬间的
+     * 内存态即权威，消费方无需补推。
+     */
+    readonly whenReady: Promise<void>;
     /** 合并把脏条目落盘（fail-soft；domain 未就绪时只保留脏标记，恢复后补写）。 */
     flush(): Promise<void>;
     /** 卸载兜底：最终 flush（排空脏标记）再关闭 domain（排空在途写）。 */

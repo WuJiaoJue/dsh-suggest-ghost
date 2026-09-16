@@ -45,6 +45,10 @@ const OVERLAY_ID = 'dsh-suggest-ghost-overlay';
 const DEFAULT_ACCEPT_KEY = 'Tab';
 /** settings 命名空间（与 host 端一致）。 */
 const SETTINGS_NAMESPACE = 'suggest-ghost';
+/** 未获应答的 pull 最多重试次数（host 可能回一份不含历史的载荷；上限防自旋）。 */
+const PULL_MAX_ATTEMPTS = 5;
+/** pull 重试的基础退避（毫秒），第 n 次退避 = 基础值 × 2^n。 */
+const PULL_RETRY_BASE_MS = 200;
 
 
 /** 插件名（与 manifest id 一致）。 */
@@ -317,6 +321,10 @@ function apply(ctx: Context): void {
       input: input as unknown as { state: ObservableSnapshot<{ draft: string }>; setDraft: (text: string) => void },
       projectionFace: session.projections.faceOf(PROJECTION_KEY),
     };
+    // 绑定成功即拉取该会话的权威状态（历史环 + 建议）：这是「会话就绪」的
+    // 唯一出口，冷启动、切会话、会话晚就绪三条路径在这里汇合成一次请求，
+    // 不再依赖 effect 初始化的那一拍（那时会话常常尚未就绪，请求会落空）。
+    pullHistory(id);
   };
 
   /** 计算当前应显示的幽灵内容（null = 不显示）。 */
@@ -380,6 +388,7 @@ function apply(ctx: Context): void {
   /** 渲染幽灵 overlay。 */
   const render = (): void => {
     resolve();
+    retryPendingPull();
     const content = ghostContent();
     if (content === null) {
       if (shown !== null) {
@@ -416,13 +425,68 @@ function apply(ctx: Context): void {
   let ghostPullScope: { set: (key: string, value: unknown) => void } | null = null;
   let pullRev = 0;
   let lastPulledSessionId: string | undefined;
-  /** 请求 host 推送某会话的历史环（切会话/冷启动时关闭「无历史」窗口）。 */
+  /** 尚未确认收到应答的 pull（见 retryPendingPull）；null = 无待确认请求。 */
+  let pendingPull: { sessionId: string; attempts: number } | null = null;
+  /** 待确认 pull 的退避定时器（仅在有 pendingPull 时存在）。 */
+  let pullRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * 请求 host 推送某会话的权威状态（历史环 + 建议 + 热度）——这也是 host 侧的
+   * **对账请求**：本页打开后该会话收到过什么，只有 host 说了算。
+   *
+   * 因此判据是「本次页面生命周期内是否已为本会话请求过」（lastPulledSessionId），
+   * 而**不能**拿本地残留的 `settings.historySessionId` 当「已经有了」的证据：
+   * 那份数据可能来自上一个进程，而 host 这次可能因为「会话尚未进店」而整个跳过
+   * 了启动对账推送（见 index.ts），此时若据此跳过请求，就再也没有对账机会了。
+   *
+   * 若写入抢跑在 host 的 `_ops` 监听注册之前，host 启动对账会补消费这条遗留
+   * 请求（consumeOps 的遗留补跑），不会丢。
+   */
   const pullHistory = (sessionId: string): void => {
     if (ghostPullScope === null) return;
-    if (sessionId === lastPulledSessionId || sessionId === settings.historySessionId) return;
+    if (sessionId === lastPulledSessionId) return;
     lastPulledSessionId = sessionId;
+    pendingPull = { sessionId, attempts: 0 };
     pullRev += 1;
     void ghostPullScope.set('_ops', JSON.stringify({ rev: pullRev, ops: [{ op: 'pull', sessionId }] }));
+    schedulePullRetry(); // 未被应答时按退避重试（见 retryPendingPull）
+  };
+
+  /**
+   * 未得到应答的 pull 重试：host 可能因「会话尚未进店 / 环尚不可得」而只回了一
+   * 份不含历史的载荷，而请求本身已被消费（`_ops` 被清空）——没有重试就再没有
+   * 对账机会。用退避定时器驱动（render 不保证还会被触发），上限
+   * {@link PULL_MAX_ATTEMPTS} 次后放弃，避免会话真的不存在时自旋。
+   */
+  const retryPendingPull = (): void => {
+    const pending = pendingPull;
+    if (pending === null || ghostPullScope === null) return;
+    // 只有当前仍绑定该会话时才值得重试（切走后由新会话的 pull 接管）。
+    if (lastSessionId !== pending.sessionId) {
+      pendingPull = null;
+      return;
+    }
+    if (settings.historySessionId === pending.sessionId) {
+      pendingPull = null; // 已收到该会话的权威状态，对账完成
+      return;
+    }
+    if (pending.attempts >= PULL_MAX_ATTEMPTS) {
+      pendingPull = null;
+      return;
+    }
+    pending.attempts += 1;
+    pullRev += 1;
+    void ghostPullScope.set('_ops', JSON.stringify({ rev: pullRev, ops: [{ op: 'pull', sessionId: pending.sessionId }] }));
+    schedulePullRetry();
+  };
+
+  /** 为待确认的 pull 排下一次退避重试（已存在定时器时不重复排）。 */
+  const schedulePullRetry = (): void => {
+    if (pendingPull === null || pullRetryTimer !== null) return;
+    const delay = PULL_RETRY_BASE_MS * 2 ** pendingPull.attempts;
+    pullRetryTimer = setTimeout(() => {
+      pullRetryTimer = null;
+      retryPendingPull();
+    }, delay);
   };
   const settingsScope = ctx.get('settingsScope');
   if (settingsScope !== undefined) {
@@ -456,10 +520,15 @@ function apply(ctx: Context): void {
         hot: pushed?.hot === null || pushed?.hot === undefined
           ? null
           : (pushed.hot as typeof settings.hot),
+        // history 省略 = host 本次推送不携带历史（保留现值）。启动对账推送正是
+        // 这种形态：它只负责恢复建议，历史留给紧随其后的 pull 应答，此时若把
+        // 本地历史清成 [] 会把「切回会话仍有历史」的体验一起清掉。
         history: Array.isArray(pushed?.history)
           ? (pushed?.history as unknown[]).filter((t): t is string => typeof t === 'string')
-          : [],
-        historySessionId: typeof pushed?.historySessionId === 'string' ? pushed.historySessionId : null,
+          : settings.history,
+        historySessionId: Array.isArray(pushed?.history)
+          ? (typeof pushed?.historySessionId === 'string' ? pushed.historySessionId : null)
+          : settings.historySessionId,
         suggestionSessionId: typeof pushed?.suggestionSessionId === 'string' ? pushed.suggestionSessionId : null,
       };
       render();
@@ -581,15 +650,12 @@ function apply(ctx: Context): void {
     };
     rebind();
     render(); // 初始渲染：不依赖订阅触发（修复：会话打开即检查幽灵）
-    if (lastSessionId !== undefined) pullHistory(lastSessionId); // 冷启动：拉当前会话历史环
-    if (lastSessionId !== undefined) pullHistory(lastSessionId); // 冷启动：拉当前会话历史环
+    // 历史环的拉取在 resolve() 绑定成功处统一发起（冷启动经上面的 rebind），
+    // 这里不再补发——旧的「初始化时拉一次」在会话尚未就绪时必然落空。
     const onList = (): void => {
-      // 会话切换（current 变化）→ 重绑订阅；否则仅渲染。
+      // 会话切换（current 变化）→ 重绑订阅（resolve 内即发起 pull）；否则仅渲染。
       const id = sessions.list.getSnapshot().current as string | undefined;
-      if (id !== lastSessionId) {
-        rebind();
-        if (id !== undefined) pullHistory(id); // 切会话：请求 host 推送该会话历史环
-      }
+      if (id !== lastSessionId) rebind();
       render();
     };
     const unList = sessions.list.subscribe(onList);
@@ -610,6 +676,9 @@ function apply(ctx: Context): void {
       unList();
       for (const un of unsubs) un();
       for (const t of deferredRenders) clearTimeout(t);
+      if (pullRetryTimer !== null) clearTimeout(pullRetryTimer);
+      pullRetryTimer = null;
+      pendingPull = null;
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('compositionstart', onCompositionStart, true);
       window.removeEventListener('compositionend', onCompositionEnd, true);

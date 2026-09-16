@@ -66,6 +66,13 @@ export interface HotnessOpsPayload {
 export interface HotnessPersistence {
   /** 持久域是否已就绪（open + 恢复合并完成）；未就绪时 flush 只保留脏标记。 */
   readonly ready: boolean;
+  /**
+   * 恢复阶段结束的信号：domain open + 恢复合并完成时兑现，open 失败（降级为
+   * 纯内存）时同样兑现——两种结局都意味着「热度表已不会再被异步改写」。宿主
+   * 未挂 storageDomain 时永不兑现：那种组合下没有异步恢复可等，启动瞬间的
+   * 内存态即权威，消费方无需补推。
+   */
+  readonly whenReady: Promise<void>;
   /** 合并把脏条目落盘（fail-soft；domain 未就绪时只保留脏标记，恢复后补写）。 */
   flush(): Promise<void>;
   /** 卸载兜底：最终 flush（排空脏标记）再关闭 domain（排空在途写）。 */
@@ -93,6 +100,11 @@ export function setupHotnessPersistence(ctx: Context): {
   let domain: HotnessDomain | null = null;
   /** 恢复合并完成前的脏标记先攒着（否则 live 计数会以「缺历史频次」的值抢先落盘）。 */
   let ready = false;
+  /** whenReady 的兑现柄：恢复阶段（成功或降级）结束时调用一次。 */
+  let settleReady: () => void = () => {};
+  const whenReady = new Promise<void>((resolve) => {
+    settleReady = resolve;
+  });
 
   const onChange: HotnessChangeHook = (text, entry) => {
     // 护栏：持久层未就绪（宿主无 storageDomain / open 失败）时脏标记永远不会被
@@ -146,7 +158,11 @@ export function setupHotnessPersistence(ctx: Context): {
         // 注入回调的 ctx 类型来自 dsh-storage-domain 的 Context augmentation；
         // 与 settings 注入一致地防御式取用，未挂载则静默降级为纯内存。
         const facility = (sctx as { storageDomain?: DomainFacility }).storageDomain;
-        if (facility === undefined) return;
+        // 服务在但域不可用：同样是「不会再被异步改写」的终局，兑现信号。
+        if (facility === undefined) {
+          settleReady();
+          return;
+        }
         const opened = await facility.open(hotnessDomainSpec);
         const table = opened.table('entries');
         // 恢复：count 降序截断到容量上限（防御历史超限 / 未来上限调小），合并进活表。
@@ -164,8 +180,10 @@ export function setupHotnessPersistence(ctx: Context): {
         // 卸载兜底挂在注入派生 fiber 上：storageDomain 卸载或插件卸载都会触发。
         ctx.effect(() => () => void close());
         void flush(); // 补写 open 窗口期累积的 live 记账与恢复合并值
+        settleReady(); // 恢复合并已完成：消费方（index.ts）据此补推完整快照
       } catch (error) {
         ctx.logger.warn(`dsh-suggest-ghost: hotness persistence unavailable, staying in-memory: ${String(error)}`);
+        settleReady(); // 降级同样终结恢复阶段：内存态即权威，消费方无需再等
       }
     })();
   });
@@ -176,6 +194,7 @@ export function setupHotnessPersistence(ctx: Context): {
       get ready(): boolean {
         return ready;
       },
+      whenReady,
       flush,
       close,
       applyOps(ops: readonly HotnessOp[]): number {

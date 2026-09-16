@@ -119,6 +119,7 @@ How to reproduce: build an isolated profile for the kernel under test (point `$D
 
 ```
 src/index.ts         host entry: turn/end(completed) → bounded suggestion generation
+src/coldstart.ts     cold-start semantics (pure): ring seeding from the log, turn-based staleness, _push read-back, suggestion tracking
 src/generate.ts      transcript extraction → sanitization → ctx.llm.stream → purification
 src/transcript.ts    pure transcript logic: char + UTF-8 byte dual-budget trimming (unit-testable)
 src/sanitize.ts      sanitize / purify / semantic filter / truncation (pure functions)
@@ -130,16 +131,32 @@ src/client/          ghost rendering, history matching, word splitting, shortcut
 scripts/             smoke tests and session log replay
 ```
 
+### Cold-start semantics (why it works right after a restart)
+
+"No data after a restart" is a misreading: **the suggestion lives in `settings.yaml`'s `_push`, and history lives in the session log.**
+The old design used *time* as the criterion (invalidate on restart, seed only when an event arrives), which left two gaps.
+It now uses *semantics*:
+
+- The **history ring** is a cache of the session log: on a pull miss it is recomputed from the log (`ringFor`), so there is no
+  "seeding moment" and therefore no race where a pull arrives before the first event. Live sessions maintain it incrementally.
+- A **suggestion** is valid iff its turn is still the session's last completed turn (`suggestionIsCurrent`). On startup the
+  persisted `_push` is read back and checked: still valid → restored as-is (your last suggestion is there when the page opens,
+  no need to wait for a new turn); provably stale → cleared; session not in the store yet (lazy restore pending) → left
+  untouched and reconciled by the first pull.
+- All three push paths (startup reconciliation / pull reply / hotness-restore re-push) share one state assembler
+  (`statePushOf`), and the client pulls at the single point where a session binding succeeds.
+
 ```bash
 pnpm run build       # tsc compiles host + esbuild bundles client → lib/
-pnpm run test:smoke  # pure-function smoke tests (incl. hotness persistence semantics)
-pnpm run test:e2e    # end-to-end over the real storage stack: persist → restart → restore
+pnpm run test:smoke  # pure-function smoke tests (incl. hotness persistence and cold-start semantics)
+pnpm run test:e2e    # end-to-end over the real stacks: hotness persist→restore; cold-start reconciliation/pull
 pnpm run replay      # replay the completion pipeline with real session logs
 ```
 
 ## Known limitations
 
 - The cross-session hotness table is now persisted (host storage domain, lands in `~/.dsh/storages/suggest_ghost_hotness.json`): frequencies survive restarts instead of accumulating from zero; on hosts without the storage domain (older versions) it automatically degrades to in-memory only
+- After a restart, history completion and the previous suggestion are available immediately (the criterion is semantic, not restart timing); a suggestion for a **new** turn still requires that turn to finish — that is inherent to "predict the next prompt", not a startup delay
 - The management panel lists and filters the pushed top-K snapshot (50 entries by default; "N total" shows the full count); host-side search beyond the top-K is not implemented
 - Delete only clears the current tally — typing the same text again re-counts; pin is the "never evicted" semantic
 - LLM suggestions cover only the current session; to include text from other sessions as candidates, enable "cross-session search"

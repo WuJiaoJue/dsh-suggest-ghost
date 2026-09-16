@@ -4,19 +4,11 @@
  * @module dsh-suggest-ghost/generate
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+import type { Session } from '@deepseek-ai/dsh-session';
 import { PROJECTION_KEY } from './domain.js';
 import type { SuggestGhostSuggested } from './domain.js';
 import type { Transcript } from './transcript.js';
-/**
- * 读取会话完整事件日志（跨代兼容）。
- * DSH 0.1.2 起 `Session.events` getter 被移除：公开面改为 `snapshotEvents()`
- * （无参调用返回全量冻结数组，语义与旧 `events` 一致）；≤0.1.1 内核只有
- * `events` getter、没有 `snapshotEvents`。两边的属性在对方那一代都不存在，
- * 类型上互不可见，这里按运行时能力探测读取。两者都缺失（不该出现的代际
- * 组合）时回退空数组——回合结束路径绝不能再因日志读取崩掉。
- */
-export declare function sessionEvents(session: Session): readonly SessionEvent[];
+export { sessionEvents } from './coldstart.js';
 /** 本能力所属的辅助请求超时错误码。 */
 export declare const SUGGEST_TIMEOUT_CODE = "SUGGEST_GHOST_TIMEOUT";
 /** host 插件配置（未校验版本）。 */

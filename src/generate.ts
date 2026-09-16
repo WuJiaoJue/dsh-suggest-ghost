@@ -10,7 +10,7 @@ import {
   createUserMessage,
 } from '@deepseek-ai/dsh-llm';
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+import type { Session } from '@deepseek-ai/dsh-session';
 import { deriveEventMessage } from '@deepseek-ai/dsh-session/surface';
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout';
 import { PROJECTION_KEY } from './domain.js';
@@ -28,22 +28,9 @@ import {
 } from './transcript.js';
 import type { Transcript, TranscriptPair } from './transcript.js';
 
-/**
- * 读取会话完整事件日志（跨代兼容）。
- * DSH 0.1.2 起 `Session.events` getter 被移除：公开面改为 `snapshotEvents()`
- * （无参调用返回全量冻结数组，语义与旧 `events` 一致）；≤0.1.1 内核只有
- * `events` getter、没有 `snapshotEvents`。两边的属性在对方那一代都不存在，
- * 类型上互不可见，这里按运行时能力探测读取。两者都缺失（不该出现的代际
- * 组合）时回退空数组——回合结束路径绝不能再因日志读取崩掉。
- */
-export function sessionEvents(session: Session): readonly SessionEvent[] {
-  const reader = session as unknown as {
-    snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly SessionEvent[];
-    events?: readonly SessionEvent[];
-  };
-  if (typeof reader.snapshotEvents === 'function') return reader.snapshotEvents();
-  return reader.events ?? [];
-}
+// 日志读取助手与冷启动语义同源（纯函数、无运行时依赖），此处转发保持既有公开面。
+import { sessionEvents } from './coldstart.js';
+export { sessionEvents } from './coldstart.js';
 
 /** 本能力所属的辅助请求超时错误码。 */
 export const SUGGEST_TIMEOUT_CODE = 'SUGGEST_GHOST_TIMEOUT';
